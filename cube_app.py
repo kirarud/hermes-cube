@@ -30,6 +30,8 @@ DEFAULT_CONFIG = {
     'cell_size': 6,
     'cube_scale': 0.27,         # base multiplier: 0.1 = tiny, 0.6 = huge
     'symbol': 'square',       # 'square', 'circle', 'dot'
+    'shape_preset': 'cube',   # 'cube', 'sphere', 'torus', 'dna'
+    'morph_progress': 0.0,    # 0 = cube, 1 = target shape
     'always_on_top': True,
     'x': None,
     'y': None,
@@ -51,6 +53,60 @@ def save_config(cfg):
     with open(CONFIG_FILE, 'w') as f:
         json.dump(cfg, f, indent=2)
 
+
+# ─── Shape generators ────────────────────────────────────────────
+SHAPE_GENERATORS = {}
+
+def _register_shape(name):
+    def decorator(fn):
+        SHAPE_GENERATORS[name] = fn
+        return fn
+    return decorator
+
+
+def _gen_cube(pts_cube):
+    """Identity — points stay as cube."""
+    return pts_cube.copy()
+
+
+def _gen_sphere(pts_cube):
+    """Normalize cube points to unit sphere."""
+    norms = np.linalg.norm(pts_cube, axis=1, keepdims=True)
+    norms = np.clip(norms, 1e-8, None)
+    return pts_cube / norms
+
+
+def _gen_torus(pts_cube):
+    """Map cube grid onto a torus."""
+    n = len(pts_cube)
+    # Use existing cube points — map their angles
+    x, y, z = pts_cube[:, 0], pts_cube[:, 1], pts_cube[:, 2]
+    R, r = 1.5, 0.5  # major / minor radius
+    theta = np.arctan2(z, x)
+    # Normalize y to phi
+    phi = np.arcsin(np.clip(y, -1, 1)) * 2
+    out = np.zeros_like(pts_cube)
+    out[:, 0] = (R + r * np.cos(phi)) * np.cos(theta)
+    out[:, 1] = r * np.sin(phi)
+    out[:, 2] = (R + r * np.cos(phi)) * np.sin(theta)
+    return out
+
+
+def _gen_dna(pts_cube):
+    """DNA double-helix twist."""
+    x, y, z = pts_cube[:, 0], pts_cube[:, 1], pts_cube[:, 2]
+    twists = 3.0
+    angle = z * twists * np.pi
+    radius = 0.7 + 0.3 * np.abs(np.sin(angle * 0.5))
+    out = np.zeros_like(pts_cube)
+    out[:, 0] = radius * np.cos(angle)
+    out[:, 1] = y * 0.5
+    out[:, 2] = radius * np.sin(angle)
+    return out
+
+
+# ─── Register all shapes ─────────────────────────────────────────
+SHAPE_LIST = ['cube', 'sphere', 'torus', 'dna']
 
 # ─── Cube Particles Engine ────────────────────────────────────────────
 class CubeEngine:
@@ -83,16 +139,35 @@ class CubeEngine:
         np.random.seed(43)
         self.jy = (np.random.rand(len(self.pts)) - 0.5) * 0.3
 
+        # Pre-generate all target shapes
+        self._cache_shapes()
+
+    def _cache_shapes(self):
+        self.shape_cache = {}
+        for name in SHAPE_LIST:
+            if name == 'cube':
+                self.shape_cache[name] = self.pts.copy()
+            else:
+                gen = SHAPE_GENERATORS.get(name)
+                if gen:
+                    self.shape_cache[name] = gen(self.pts)
+
     def recalc(self, cfg):
         N = cfg.get('particle_density', 12)
         if N != self.density:
             self.density = N
             self._build_particles()
+        else:
+            # Still refresh shape cache if points regenerated externally
+            if hasattr(self, 'pts') and not hasattr(self, 'shape_cache'):
+                self._cache_shapes()
 
     def get_frame(self, t, cfg):
         speed = cfg.get('rotation_speed', 0.28)
         pulse_rate = cfg.get('pulse_rate', 1.8)
         pulse_amp = cfg.get('pulse_amplitude', 0.12)
+        morph = cfg.get('morph_progress', 0.0)
+        shape = cfg.get('shape_preset', 'cube')
 
         ang_x = t * 0.20 * (speed / 0.28)
         ang_y = t * speed
@@ -104,7 +179,17 @@ class CubeEngine:
         cy, sy = math.cos(ang_y), math.sin(ang_y)
         cz, sz = math.cos(ang_z), math.sin(ang_z)
 
-        x, y, z = self.pts[:, 0].copy(), self.pts[:, 1].copy(), self.pts[:, 2].copy()
+        # Base cube positions
+        cube_pts = self.pts
+        # Target shape positions
+        target = self.shape_cache.get(shape, cube_pts)
+        # Morph: interpolate
+        if morph > 0.0:
+            pts_now = cube_pts * (1.0 - morph) + target * morph
+        else:
+            pts_now = cube_pts
+
+        x, y, z = pts_now[:, 0].copy(), pts_now[:, 1].copy(), pts_now[:, 2].copy()
 
         # Rot X
         y1 = y * cx - z * sx
@@ -489,6 +574,11 @@ class SettingsWindow:
         row = add_slider('rotation_speed', 'Скорость вращения', 0.05, 1.0, row)
         row = add_slider('pulse_rate', 'Частота пульсации', 0.3, 5.0, row)
         row = add_slider('pulse_amplitude', 'Амплитуда пульсации', 0.0, 0.35, row)
+
+        # ─── Shape ───
+        add_label('Форма', row); row += 1
+        row = add_dropdown('shape_preset', 'Пресет формы', ['cube', 'sphere', 'torus', 'dna'], row)
+        row = add_slider('morph_progress', 'Морфинг (куб → форма)', 0.0, 1.0, row)
 
         # ─── Particles ───
         add_label('Частицы', row); row += 1
