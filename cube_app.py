@@ -30,8 +30,11 @@ DEFAULT_CONFIG = {
     'cell_size': 6,
     'cube_scale': 0.27,         # base multiplier: 0.1 = tiny, 0.6 = huge
     'symbol': 'square',       # 'square', 'circle', 'dot'
-    'shape_preset': 'cube',   # 'cube', 'sphere', 'torus', 'dna'
+    'shape_preset': 'cube',   # 'cube', 'sphere', 'torus', 'dna', 'metaball'
     'morph_progress': 0.0,    # 0 = cube, 1 = target shape
+    'particle_mode': 'off',   # 'off', 'wave', 'breathe', 'orbit', 'geyser'
+    'wave_speed': 1.5,        # speed of particle animation
+    'wave_amp': 0.12,         # amplitude of particle displacement
     'always_on_top': True,
     'x': None,
     'y': None,
@@ -55,18 +58,7 @@ def save_config(cfg):
 
 
 # ─── Shape generators ────────────────────────────────────────────
-SHAPE_GENERATORS = {}
-
-def _register_shape(name):
-    def decorator(fn):
-        SHAPE_GENERATORS[name] = fn
-        return fn
-    return decorator
-
-
-def _gen_cube(pts_cube):
-    """Identity — points stay as cube."""
-    return pts_cube.copy()
+# Each function takes cube points (N,3) and returns target positions
 
 
 def _gen_sphere(pts_cube):
@@ -78,12 +70,9 @@ def _gen_sphere(pts_cube):
 
 def _gen_torus(pts_cube):
     """Map cube grid onto a torus."""
-    n = len(pts_cube)
-    # Use existing cube points — map their angles
     x, y, z = pts_cube[:, 0], pts_cube[:, 1], pts_cube[:, 2]
     R, r = 1.5, 0.5  # major / minor radius
     theta = np.arctan2(z, x)
-    # Normalize y to phi
     phi = np.arcsin(np.clip(y, -1, 1)) * 2
     out = np.zeros_like(pts_cube)
     out[:, 0] = (R + r * np.cos(phi)) * np.cos(theta)
@@ -105,8 +94,56 @@ def _gen_dna(pts_cube):
     return out
 
 
-# ─── Register all shapes ─────────────────────────────────────────
-SHAPE_LIST = ['cube', 'sphere', 'torus', 'dna']
+def _gen_metaball(pts_cube):
+    """Metaballs — organic humanoid blob via skeleton attraction.
+    Each point is pulled towards weighted centers (head, chest, pelvis,
+    shoulders, hips), creating a smooth Terminator-like silhouette."""
+    centers = np.array([
+        [0.0, 0.8, 0.0],   # head
+        [0.0, 0.25, 0.0],  # chest
+        [0.0, -0.35, 0.0], # pelvis
+        [0.55, 0.15, 0.0], # L shoulder
+        [-0.55, 0.15, 0.0],# R shoulder
+        [0.3, -0.6, 0.0],  # L hip
+        [-0.3, -0.6, 0.0], # R hip
+    ], dtype=np.float64)
+    radii = np.array([0.55, 0.7, 0.7, 0.45, 0.45, 0.35, 0.35], dtype=np.float64)
+
+    # Distances from each point to each center: (N, M)
+    diffs = pts_cube[:, np.newaxis, :] - centers[np.newaxis, :, :]  # (N, M, 3)
+    dists = np.linalg.norm(diffs, axis=2) + 1e-5  # (N, M)
+
+    # Field contribution per center
+    field = radii[np.newaxis, :] / dists  # (N, M)
+
+    # Weighted center of mass for each point
+    w = field / (np.sum(field, axis=1, keepdims=True) + 1e-8)  # (N, M)
+    weighted_center = np.sum(w[:, :, np.newaxis] * centers[np.newaxis, :, :], axis=1)
+
+    # Total field strength
+    F = np.sum(field, axis=1)  # (N,)
+
+    # Pull strength: higher field = stronger pull towards body
+    strength = np.clip((F - 0.5) / 2.0, 0, 1)[:, np.newaxis]
+    target = pts_cube + (weighted_center - pts_cube) * strength * 0.6
+
+    # Normalize volume to roughly cube size
+    norms = np.linalg.norm(target, axis=1, keepdims=True)
+    mean_norm = np.mean(norms)
+    if mean_norm > 0:
+        target = target / mean_norm * 0.85
+
+    return target
+
+
+# ─── Shape registry ──────────────────────────────────────────────
+SHAPE_GENERATORS = {
+    'sphere': _gen_sphere,
+    'torus': _gen_torus,
+    'dna': _gen_dna,
+    'metaball': _gen_metaball,
+}
+SHAPE_LIST = ['cube', 'sphere', 'torus', 'dna', 'metaball']
 
 # ─── Cube Particles Engine ────────────────────────────────────────────
 class CubeEngine:
@@ -188,6 +225,56 @@ class CubeEngine:
             pts_now = cube_pts * (1.0 - morph) + target * morph
         else:
             pts_now = cube_pts
+
+        # ─── Particle animation mode ──────────────────────────────
+        pmode = cfg.get('particle_mode', 'off')
+        wspeed = cfg.get('wave_speed', 1.5)
+        wamp = cfg.get('wave_amp', 0.12)
+
+        if pmode != 'off' and wamp > 0.001:
+            if pmode == 'wave':
+                # Standing + travelling waves across the volume
+                w1 = np.sin(pts_now[:, 1] * 3.0 + t * wspeed * 2.5) * wamp
+                w2 = np.cos(pts_now[:, 0] * 2.5 + t * wspeed * 1.7) * wamp * 0.7
+                w3 = np.sin(pts_now[:, 2] * 3.2 + t * wspeed * 2.0) * wamp * 0.5
+                # 3D Lissajous wave field
+                pts_now[:, 0] += w1 * 0.5 + np.cos(pts_now[:, 2] * 2.0 + t * wspeed * 1.3) * wamp * 0.3
+                pts_now[:, 1] += w2 + np.sin(pts_now[:, 0] * 3.0 + t * wspeed * 1.1) * wamp * 0.4
+                pts_now[:, 2] += w3 + np.cos(pts_now[:, 1] * 2.8 + t * wspeed * 1.9) * wamp * 0.3
+
+            elif pmode == 'breathe':
+                # Each particle breathes at its own phase
+                phase = (pts_now[:, 0] * 1.7 + pts_now[:, 1] * 2.3 + pts_now[:, 2] * 1.1)
+                dx = np.sin(phase + t * wspeed * 1.5) * wamp
+                dy = np.cos(phase * 1.3 + t * wspeed * 1.1) * wamp
+                dz = np.sin(phase * 0.7 + t * wspeed * 1.8) * wamp
+                pts_now[:, 0] += dx
+                pts_now[:, 1] += dy
+                pts_now[:, 2] += dz
+
+            elif pmode == 'orbit':
+                # Particles orbit their rest positions in 3D
+                phase = (pts_now[:, 0] * 2.7 + pts_now[:, 1] * 3.1 + pts_now[:, 2] * 1.9)
+                ox = np.cos(phase + t * wspeed) * wamp
+                oy = np.sin(phase * 1.3 + t * wspeed * 0.7) * wamp
+                oz = np.cos(phase * 0.7 + t * wspeed * 1.4) * wamp
+                # Cross-orbit for 3D spiralling
+                ox += np.sin(phase * 0.5 + t * wspeed * 0.9) * wamp * 0.4
+                oz += np.cos(phase * 0.9 + t * wspeed * 1.1) * wamp * 0.4
+                pts_now[:, 0] += ox
+                pts_now[:, 1] += oy
+                pts_now[:, 2] += oz
+
+            elif pmode == 'geyser':
+                # Particles stream upward, spreading at the top
+                h = (pts_now[:, 1] + 1.0) * 0.5  # 0 bottom → 1 top
+                spray = np.sin(t * wspeed * 2.5 + pts_now[:, 0] * 4.0 + pts_now[:, 2] * 4.0)
+                spread = spray * wamp * (0.3 + h * 0.7)
+                pts_now[:, 0] += spread
+                pts_now[:, 2] += spread
+                # Vertical wobble at top
+                wobble = np.sin(t * wspeed * 3.0 + pts_now[:, 0] * 5.0 + pts_now[:, 2] * 5.0)
+                pts_now[:, 1] += wobble * wamp * 0.25 * h
 
         x, y, z = pts_now[:, 0].copy(), pts_now[:, 1].copy(), pts_now[:, 2].copy()
 
@@ -491,36 +578,68 @@ class SettingsWindow:
         self.cfg = dict(app.cfg)
         self.win = tk.Toplevel(app.root)
         self.win.title('⚙ Hermes Cube — Настройки')
-        self.win.geometry('420x500')
+        self.win.geometry('400x420')
         self.win.resizable(True, True)
         self.win.configure(bg='#1a1a2e')
         self.win.transient(app.root)
         self.win.grab_set()
+        self.win.minsize(380, 300)
 
-        # Column weights: label auto, slider expands, value fixed
-        self.win.columnconfigure(0, weight=0)
-        self.win.columnconfigure(1, weight=1)
-        self.win.columnconfigure(2, weight=0)
+        # ─── Scrollable frame ─────────────────────────────────────
+        canvas = tk.Canvas(self.win, bg='#1a1a2e', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.win, orient='vertical', command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg='#1a1a2e')
+
+        scroll_frame.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=scroll_frame, anchor='nw', width=380)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
+        # Mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+        def _on_mousewheel_linux(event):
+            canvas.yview_scroll(-1 if event.num == 4 else 1, 'units')
+
+        canvas.bind_all('<MouseWheel>', _on_mousewheel, add='+')
+        canvas.bind_all('<Button-4>', _on_mousewheel_linux, add='+')
+        canvas.bind_all('<Button-5>', _on_mousewheel_linux, add='+')
+
+        # Cleanup bindings on destroy
+        self.win.bind('<Destroy>', lambda e: (
+            canvas.unbind_all('<MouseWheel>'),
+            canvas.unbind_all('<Button-4>'),
+            canvas.unbind_all('<Button-5>'),
+        ), add='+')
+
+        # ─── Content frame ────────────────────────────────────────
+        parent = scroll_frame
 
         style = ttk.Style()
         style.theme_use('clam')
         style.configure('TLabel', background='#1a1a2e', foreground='#e0e0e0', font=('Segoe UI', 10))
         style.configure('TScale', background='#1a1a2e')
 
+        # Column weights: label auto, slider expands, value fixed
+        parent.columnconfigure(0, weight=0)
+        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(2, weight=0)
+
         fg = '#e0e0e0'
         bg = '#1a1a2e'
-        entry_bg = '#16213e'
 
         row = 0
 
         def add_label(text, r):
-            tk.Label(self.win, text=text, fg=fg, bg=bg,
+            tk.Label(parent, text=text, fg=fg, bg=bg,
                      font=('Segoe UI', 10, 'bold')).grid(row=r, column=0,
                      sticky='w', padx=15, pady=(10, 2))
             return r + 1
 
         def add_slider(key, label, min_v, max_v, r, digits=2):
-            tk.Label(self.win, text=label, fg=fg, bg=bg,
+            tk.Label(parent, text=label, fg=fg, bg=bg,
                      font=('Segoe UI', 9)).grid(row=r, column=0, sticky='w', padx=(15, 5))
             var = tk.DoubleVar(value=self.cfg.get(key, 1.0))
             def on_change(val, k=key, v=var):
@@ -531,21 +650,21 @@ class SettingsWindow:
                     self.app.engine.recalc(self.app.cfg)
                 elif k == 'cell_size':
                     self.app.cfg['cell_size'] = max(2, int(float(val)))
-            scale = tk.Scale(self.win, from_=min_v, to=max_v, resolution=10**-digits,
+            scale = tk.Scale(parent, from_=min_v, to=max_v, resolution=10**-digits,
                             orient=tk.HORIZONTAL, variable=var, command=on_change,
-                            length=180, bg=bg, fg=fg, highlightbackground=bg,
+                            length=160, bg=bg, fg=fg, highlightbackground=bg,
                             troughcolor='#16213e', activebackground='#0f3460')
-            val_label = tk.Label(self.win, textvariable=var, fg='#e94560', bg=bg,
+            val_label = tk.Label(parent, textvariable=var, fg='#e94560', bg=bg,
                                 font=('Segoe UI', 9, 'bold'), width=4)
             scale.grid(row=r, column=1, sticky='ew', padx=(3, 3), pady=2)
             val_label.grid(row=r, column=2, sticky='w', padx=(0, 15))
             return r + 1
 
         def add_dropdown(key, label, options, r):
-            tk.Label(self.win, text=label, fg=fg, bg=bg,
+            tk.Label(parent, text=label, fg=fg, bg=bg,
                      font=('Segoe UI', 9)).grid(row=r, column=0, sticky='w', padx=(15, 5))
             var = tk.StringVar(value=self.cfg.get(key, options[0]))
-            dropdown = ttk.Combobox(self.win, textvariable=var, values=options,
+            dropdown = ttk.Combobox(parent, textvariable=var, values=options,
                                    state='readonly', width=14)
             dropdown.grid(row=r, column=1, sticky='w', padx=5, pady=2)
             def on_change(*args, k=key):
@@ -555,16 +674,16 @@ class SettingsWindow:
             return r + 1
 
         # ─── Title ───
-        tk.Label(self.win, text='♢ Hermes Cube', fg='#e94560', bg=bg,
+        tk.Label(parent, text='♢ Hermes Cube', fg='#e94560', bg=bg,
                  font=('Segoe UI', 14, 'bold')).grid(row=row, column=0, columnspan=3,
                  pady=(15, 5))
         row += 1
-        tk.Label(self.win, text='Настройки аватара', fg='#888', bg=bg,
+        tk.Label(parent, text='Настройки аватара', fg='#888', bg=bg,
                  font=('Segoe UI', 9)).grid(row=row, column=0, columnspan=3)
         row += 1
 
         # ─── Separator ───
-        ttk.Separator(self.win, orient='horizontal').grid(row=row, column=0, columnspan=3,
+        ttk.Separator(parent, orient='horizontal').grid(row=row, column=0, columnspan=3,
                                                           sticky='ew', padx=15, pady=8)
         row += 1
 
@@ -577,8 +696,14 @@ class SettingsWindow:
 
         # ─── Shape ───
         add_label('Форма', row); row += 1
-        row = add_dropdown('shape_preset', 'Пресет формы', ['cube', 'sphere', 'torus', 'dna'], row)
+        row = add_dropdown('shape_preset', 'Пресет формы', ['cube', 'sphere', 'torus', 'dna', 'metaball'], row)
         row = add_slider('morph_progress', 'Морфинг (куб → форма)', 0.0, 1.0, row)
+
+        # ─── Particle Animation ───
+        add_label('Анимация частиц', row); row += 1
+        row = add_dropdown('particle_mode', 'Режим', ['off', 'wave', 'breathe', 'orbit', 'geyser'], row)
+        row = add_slider('wave_speed', 'Скорость анимации', 0.2, 5.0, row)
+        row = add_slider('wave_amp', 'Амплитуда смещения', 0.0, 0.5, row)
 
         # ─── Particles ───
         add_label('Частицы', row); row += 1
@@ -591,7 +716,7 @@ class SettingsWindow:
 
         # ─── On top ───
         on_top_var = tk.BooleanVar(value=self.cfg.get('always_on_top', True))
-        cb = tk.Checkbutton(self.win, text='Поверх всех окон', variable=on_top_var,
+        cb = tk.Checkbutton(parent, text='Поверх всех окон', variable=on_top_var,
                           bg=bg, fg=fg, selectcolor='#16213e',
                           activebackground=bg, activeforeground=fg,
                           font=('Segoe UI', 9))
@@ -604,7 +729,7 @@ class SettingsWindow:
         row += 1
 
         # ─── Buttons ───
-        btn_frame = tk.Frame(self.win, bg=bg)
+        btn_frame = tk.Frame(parent, bg=bg)
         btn_frame.grid(row=row, column=0, columnspan=3, pady=15)
 
         def save():
