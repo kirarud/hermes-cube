@@ -1,0 +1,17 @@
+# Distributables (too large for git — attach to GitHub Releases)
+*.exe
+
+# Build artifacts
+build/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
