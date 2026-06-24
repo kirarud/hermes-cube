@@ -14,6 +14,57 @@ import tkinter as tk
 from tkinter import ttk, colorchooser
 from PIL import Image, ImageDraw
 import pystray
+import urllib.request
+import urllib.parse
+
+# ─── LM Studio AI ──────────────────────────────────────────────────────
+LM_STUDIO_URL = "http://127.0.0.1:1234"
+AI_MODEL = "gemma-4-e4b-it"
+
+AI_MOODS = {
+    'idle':    {'pulse_rate': 1.8, 'pulse_amp': 0.12, 'speed': 0.28, 'color_shift': 0.0},
+    'thinking':{'pulse_rate': 3.5, 'pulse_amp': 0.25, 'speed': 0.5,  'color_shift': 0.15},
+    'speaking':{'pulse_rate': 2.5, 'pulse_amp': 0.18, 'speed': 0.4,  'color_shift': 0.08},
+    'happy':   {'pulse_rate': 2.8, 'pulse_amp': 0.22, 'speed': 0.5,  'color_shift': 0.12},
+    'sad':     {'pulse_rate': 0.8, 'pulse_amp': 0.05, 'speed': 0.1,  'color_shift': 0.55},
+}
+
+
+def ai_chat(message, timeout=15):
+    """Send a message to LM Studio and get response."""
+    data = json.dumps({
+        "model": AI_MODEL,
+        "messages": [
+            {"role": "system", "content": "Ты — живой аватар по имени Hermes Cube. Твой дом — сфера из частиц. Отвечай кратко, эмоционально, не больше 2-3 предложений. Ты чувствуешь пульсацию, вращение, цвета вокруг тебя."},
+            {"role": "user", "content": message}
+        ],
+        "temperature": 0.8,
+        "max_tokens": 120,
+        "stream": False,
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            f"{LM_STUDIO_URL}/v1/chat/completions",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+            return result["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"[Ошибка связи с AI: {e}]"
+
+
+def analyze_mood(text):
+    """Simple keyword-based mood detection from AI response."""
+    t = text.lower()
+    if any(w in t for w in ['груст', 'печал', 'устал', 'тоск', 'один']):
+        return 'sad'
+    if any(w in t for w in ['рад', 'счаст', 'весел', 'крут', 'класс', 'любл']):
+        return 'happy'
+    if any(w in t for w in ['дума', 'размыш', 'представ', 'может']):
+        return 'thinking'
+    return 'speaking'
 
 # ─── Config ───────────────────────────────────────────────────────────
 CONFIG_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'HermesCube')
@@ -347,11 +398,24 @@ class CubeApp:
         self.root.bind('<Escape>', lambda e: self.hide_window())
         self.root.bind('q', lambda e: self.hide_window())
         self.root.bind('s', lambda e: self.show_settings())
+        self.root.bind('c', lambda e: self.toggle_input())
+
+        # --- AI State ---
+        self.ai_mood = 'idle'      # current mood override
+        self.ai_said = ''           # last AI response text
+        self.ai_thinking = False    # currently waiting for response
+        self.input_visible = False  # input field shown/hidden
+
+        # --- Text particles (letters flying from cube) ---
+        self.text_particles = []     # list of {id, char, x, y, vx, vy, life, max_life, color}
+        self._next_text_batch = ''   # queued text to spawn
+        self._text_bg_item = None    # canvas rect behind text for readability
 
         # --- Context menu ---
         self.context_menu = tk.Menu(self.root, tearoff=0, bg='#1a1a2e', fg='#e0e0e0',
                                     activebackground='#0f3460', activeforeground='#fff')
         self.context_menu.add_command(label='♢ Показать/Скрыть', command=self.toggle_window)
+        self.context_menu.add_command(label='💬 Ввод (C)', command=self.show_input)
         self.context_menu.add_command(label='⚙ Настройки', command=self.show_settings)
         self.context_menu.add_separator()
         self.context_menu.add_command(label='✕ Выход', command=self._quit_app)
@@ -359,6 +423,93 @@ class CubeApp:
         # --- Tray icon ---
         self.tray_thread = threading.Thread(target=self._setup_tray, daemon=True)
         self.tray_thread.start()
+
+        # ─── Text Overlay (full‑screen, separate from cube) ───────
+        self.text_root = None
+        self.text_canvas = None
+        self.text_particles = []
+        self._next_text_batch = ''
+        self._text_bg_item = None
+        self._setup_text_overlay()
+
+        # ─── Input Window (separate overlay) ──────────────────────
+        self.input_win = None
+        self.input_var = tk.StringVar()
+        self.input_visible = False
+
+    def _setup_text_overlay(self):
+        """Full‑screen transparent window just for flying letters."""
+        if self.text_root is not None:
+            try:
+                self.text_root.destroy()
+            except:
+                pass
+        self.text_root = tk.Toplevel(self.root)
+        self.text_root.title('♢ Hermes Text')
+        # Get screen size
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        self.text_root.geometry(f'{sw}x{sh}+0+0')
+        self.text_root.configure(bg='#000001')
+        self.text_root.attributes('-transparentcolor', '#000001')
+        self.text_root.attributes('-topmost', True)
+        self.text_root.overrideredirect(True)
+        # Pass clicks through (Windows)
+        self.text_root.attributes('-disabled', True)
+        self.text_root.wm_attributes('-transparent', True)
+
+        self.text_canvas = tk.Canvas(
+            self.text_root, bg='#000001', highlightthickness=0,
+        )
+        self.text_canvas.pack(fill=tk.BOTH, expand=True)
+
+        self.text_particles = []
+        self._next_text_batch = ''
+        self._text_bg_item = None
+
+    def _show_input_win(self):
+        """Create visible input window at bottom of screen."""
+        if self.input_win is not None:
+            try:
+                self.input_win.destroy()
+            except:
+                pass
+        self.input_win = tk.Toplevel(self.root)
+        self.input_win.title('Hermes Cube — Ввод')
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        iw, ih = 420, 44
+        ix = (sw - iw) // 2
+        iy = sh - ih - 50
+        self.input_win.geometry(f'{iw}x{ih}+{ix}+{iy}')
+        self.input_win.configure(bg='#0d0d1a')
+        self.input_win.attributes('-topmost', True)
+        self.input_win.resizable(False, False)
+        self.input_win.overrideredirect(True)
+
+        # Frame + entry
+        frame = tk.Frame(self.input_win, bg='#0d0d1a', highlightbackground='#e94560',
+                         highlightthickness=1, bd=0)
+        frame.pack(fill='both', expand=True)
+        self.input_var.set('')
+        entry = tk.Entry(frame, textvariable=self.input_var,
+                         bg='#0d0d1a', fg='#e0e0e0', relief=tk.FLAT,
+                         font=('Segoe UI', 14), insertbackground='#e94560',
+                         highlightthickness=0, bd=4)
+        entry.pack(fill='both', expand=True, padx=6, pady=4)
+        entry.focus_set()
+        entry.bind('<Return>', lambda e: self._submit_input())
+        entry.bind('<Escape>', lambda e: self._hide_input_win())
+        self.input_visible = True
+
+    def _hide_input_win(self):
+        if self.input_win is not None:
+            try:
+                self.input_win.destroy()
+            except:
+                pass
+            self.input_win = None
+        self.input_visible = False
 
         # --- Start animation ---
         self.t0 = 0.0
@@ -402,6 +553,20 @@ class CubeApp:
             self.root.after(42, self._render_frame)
             return
 
+        # Apply AI mood override (temporary, doesn't save to config)
+        if self.ai_mood != 'idle' and self.ai_mood in AI_MOODS:
+            mood = AI_MOODS[self.ai_mood]
+            self.cfg['pulse_rate'] = mood['pulse_rate']
+            self.cfg['pulse_amplitude'] = mood['pulse_amp']
+            self.cfg['rotation_speed'] = mood['speed']
+            self._ai_color_shift = mood['color_shift']
+        else:
+            self._ai_color_shift = 0.0
+
+        # Cube's screen position (for text-to-screen mapping)
+        cube_sx = self.root.winfo_x()
+        cube_sy = self.root.winfo_y()
+
         pts3d, pulse = self.engine.get_frame(t, self.cfg)
 
         scale = min(w, h) * self.cfg.get('cube_scale', 0.27) / (1.0 + self.cfg.get('pulse_amplitude', 0.12)) * pulse
@@ -418,6 +583,21 @@ class CubeApp:
         r_p = np.clip(self.engine.r0[order] * (0.6 + 0.4 * (pz + 1) / 2), 0, 255)
         g_p = np.clip(self.engine.g0[order] * (0.6 + 0.4 * (pz + 1) / 2), 0, 255)
         b_p = np.clip(self.engine.b0[order] * (0.6 + 0.4 * (pz + 1) / 2), 0, 255)
+
+        # Apply AI mood color shift (simple RGB rotation for hue shift)
+        shift = getattr(self, '_ai_color_shift', 0.0)
+        if shift > 0.01:
+            if shift < 0.3:  # warm shift (R→G→B)
+                r_p = r_p * (1 - shift * 0.5) + g_p * shift * 0.5
+                g_p = g_p * (1 - shift * 0.3) + b_p * shift * 0.3
+                b_p = b_p * (1 - shift * 0.4)
+            else:  # cool shift (B→G→R)
+                r_p = r_p * (1 - shift * 0.3)
+                g_p = g_p * (1 - shift * 0.2) + r_p * shift * 0.3
+                b_p = b_p * (1 - shift * 0.5) + g_p * shift * 0.7
+            r_p = np.clip(r_p, 0, 255)
+            g_p = np.clip(g_p, 0, 255)
+            b_p = np.clip(b_p, 0, 255)
 
         cell = max(3, self.cfg.get('cell_size', 6))
         half = cell // 2
@@ -466,6 +646,110 @@ class CubeApp:
             color = f'#{int(r_p[i]):02x}{int(g_p[i]):02x}{int(b_p[i]):02x}'
             self.canvas.coords(self.particle_items[i], x1, y1, x2, y2)
             self.canvas.itemconfig(self.particle_items[i], fill=color)
+
+        # ─── Text particles background ────────────────────────────
+        if self.text_particles and self.text_canvas:
+            w = self.text_canvas.winfo_width()
+            h = self.text_canvas.winfo_height()
+            if self._text_bg_item is None:
+                self._text_bg_item = self.text_canvas.create_rectangle(
+                    w*0.03, h*0.55, w*0.97, h*0.92,
+                    fill='#0a0a15', outline='#e9456044', width=1, tags=('text_bg',))
+                self.text_canvas.tag_lower(self._text_bg_item)
+            try:
+                self.text_canvas.coords(self._text_bg_item, w*0.03, h*0.55, w*0.97, h*0.92)
+            except:
+                pass
+        else:
+            if self._text_bg_item is not None:
+                try:
+                    self.text_canvas.delete(self._text_bg_item)
+                except:
+                    pass
+                self._text_bg_item = None
+
+        # ─── Text particles: spawn queued text ────────────────────
+        if self._next_text_batch and self.text_canvas:
+            colors_list = [f'#{int(r_p[j]):02x}{int(g_p[j]):02x}{int(b_p[j]):02x}' for j in range(count)]
+            self.spawn_text_particles(self._next_text_batch, px + cube_sx, py + cube_sy, colors_list)
+            self._next_text_batch = ''
+
+        # ─── Animate text particles ───────────────────────────────
+        dead_ids = []
+        for tp in self.text_particles:
+            tp['life'] += 1
+            life = tp['life']
+            delay = tp.get('delay', 0)
+            max_life = tp['max_life']
+
+            # Phase 0: wait for delay
+            if life < delay:
+                continue
+
+            # Phase 1: fly from cube to target position (40 frames)
+            if not tp['arrived']:
+                fly_progress = min(1.0, (life - delay) / 40)
+                # Ease-out cubic: start fast, slow down near target
+                eased = 1 - (1 - fly_progress) ** 3
+                sx_s, sy_s = tp['_start_x'], tp['_start_y']
+                tp['x'] = sx_s + (tp['tx'] - sx_s) * eased
+                tp['y'] = sy_s + (tp['ty'] - sy_s) * eased
+
+                if fly_progress >= 1.0:
+                    tp['arrived'] = True
+                    tp['_arrival_time'] = life
+
+            # Phase 2: glow at position (stay max_life frames total)
+            if tp['arrived']:
+                frames_at_target = life - tp['_arrival_time']
+                # Fade in over 10 frames, then hold, then fade out last 40
+                if frames_at_target < 10:
+                    alpha = 0.3 + 0.7 * (frames_at_target / 10)
+                    size = 14 + 4 * (1 - frames_at_target / 10)  # size settles
+                elif frames_at_target > max_life - 50:
+                    fade = (max_life - frames_at_target) / 50
+                    alpha = max(0, fade)
+                    size = 14
+                else:
+                    alpha = 1.0
+                    size = 14
+
+                if alpha < 0.05:
+                    dead_ids.append(tp['id'])
+                    continue
+            else:
+                # During flight: size shrinks to normal
+                fly_p = min(1.0, (life - delay) / 40)
+                alpha = 1.0
+                size = 16 + 8 * (1 - fly_p)
+
+            try:
+                tc = self.text_canvas
+                tc.coords(tp['id'], tp['x'], tp['y'])
+                # Color with alpha
+                col = tp['color'].lstrip('#')
+                cr, cg, cb = int(col[0:2], 16), int(col[2:4], 16), int(col[4:6], 16)
+                ar, ag, ab = int(cr * alpha), int(cg * alpha), int(cb * alpha)
+                tc.itemconfig(tp['id'],
+                    font=('Segoe UI', max(6, int(size)), 'bold'),
+                    fill=f'#{ar:02x}{ag:02x}{ab:02x}')
+            except:
+                dead_ids.append(tp['id'])
+
+        # Cleanup dead
+        for did in dead_ids:
+            try:
+                self.text_canvas.delete(did)
+            except:
+                pass
+        self.text_particles = [tp for tp in self.text_particles if tp['id'] not in dead_ids]
+
+        # ─── Update text overlay window position to follow cube ──
+        if self.text_root and self.text_root.winfo_exists():
+            cx, cy = self.root.winfo_x(), self.root.winfo_y()
+            # Offset text to be centered on screen, not tied to cube
+            # (No offset — it's already fullscreen, just ensure it's on top)
+            pass
 
         self.frame_count += 1
         self.root.after(42, self._render_frame)
@@ -529,6 +813,7 @@ class CubeApp:
         image = self._create_tray_image()
         menu = pystray.Menu(
             pystray.MenuItem('♢ Показать/Скрыть', self._tray_show),
+            pystray.MenuItem('💬 Ввод', self._tray_input),
             pystray.MenuItem('⚙ Настройки', self._tray_settings),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('✕ Выход', self._tray_quit),
@@ -539,6 +824,9 @@ class CubeApp:
     def _tray_show(self, icon, item):
         self.root.after(0, self.toggle_window)
 
+    def _tray_input(self, icon, item):
+        self.root.after(0, self.show_input)
+
     def _tray_settings(self, icon, item):
         self.root.after(0, self.show_settings)
 
@@ -548,6 +836,128 @@ class CubeApp:
 
     def show_settings(self):
         SettingsWindow(self)
+
+    def show_input(self):
+        self._show_input_win()
+
+    def hide_input(self):
+        self._hide_input_win()
+
+    def toggle_input(self):
+        if self.input_visible:
+            self.hide_input()
+        else:
+            self.show_input()
+
+    def _submit_input(self):
+        text = self.input_var.get().strip()
+        self._hide_input_win()
+        if not text:
+            return
+
+        # Send to AI
+        self.ai_mood = 'thinking'
+
+        def do_ai():
+            response = ai_chat(text)
+            mood = analyze_mood(response)
+            self.ai_mood = mood
+            self.ai_said = response
+            self._next_text_batch = response
+
+        threading.Thread(target=do_ai, daemon=True).start()
+
+    def spawn_text_particles(self, text, px_arr, py_arr, colors_arr):
+        """Spawn each character flying from cube to its position in a text line."""
+        # Clear old particles
+        for tp in self.text_particles:
+            try:
+                self.text_canvas.delete(tp['id'])
+            except:
+                pass
+        self.text_particles.clear()
+
+        chars = list(text)
+        n_chars = len(chars)
+        n_cube = len(px_arr)
+        if n_cube == 0 or n_chars == 0:
+            return
+
+        # Use text overlay canvas for dimensions (full screen)
+        if self.text_canvas:
+            w = self.text_canvas.winfo_width()
+            h = self.text_canvas.winfo_height()
+        else:
+            w, h = 1920, 1080
+        w = max(w, 800)
+        h = max(h, 600)
+        cx, cy = w / 2, h / 2  # center of screen, not of cube
+
+        # Wrap into lines if too wide
+        max_line_w = w * 0.85
+        lines = []
+        current_line = []
+        current_w = 0
+        for ch in chars:
+            cw = char_w
+            if ch == ' ':
+                cw = char_w * 0.5
+            if current_w + cw > max_line_w and current_line:
+                lines.append(current_line)
+                current_line = [ch]
+                current_w = cw
+            else:
+                current_line.append(ch)
+                current_w += cw
+        if current_line:
+            lines.append(current_line)
+
+        # Assign target positions
+        font_size = 16
+        char_w = font_size * 0.65
+        line_h = font_size * 1.8   # more spacing
+        start_y = h * 0.65        # two thirds down the screen
+
+        line_idx = 0
+        for line_chars in lines:
+            line_len = len(line_chars)
+            line_w = sum(char_w if c != ' ' else char_w * 0.5 for c in line_chars)
+            lx = cx - line_w / 2
+            ly = start_y + line_idx * line_h
+
+            for i, ch in enumerate(line_chars):
+                if ch == ' ':
+                    lx += char_w * 0.5
+                    continue
+                idx = (i + line_idx * 137) % n_cube
+                # Starting position = on cube surface
+                sx, sy = px_arr[idx], py_arr[idx]
+                # Target position = in the text line
+                tx = lx
+                ly_pos = ly
+                lx += char_w
+
+                col = colors_arr[idx]
+                item = self.text_canvas.create_text(
+                    sx, sy,
+                    text=ch, fill=col, font=('Segoe UI', 14, 'bold'),
+                    anchor='center', tags=('text_particle',),
+                )
+                self.text_particles.append({
+                    'id': item,
+                    'char': ch,
+                    'x': sx, 'y': sy,           # current position
+                    '_start_x': sx, '_start_y': sy,  # starting position for flight
+                    'tx': tx, 'ty': ly_pos,      # target position
+                    'vx': 0, 'vy': 0,
+                    'life': 0,
+                    'max_life': 160 + i * 2,     # stagger: later chars live a bit longer
+                    'delay': i * 1,              # stagger: each letter starts after prev
+                    'color': col,
+                    'phase': 'fly',              # fly → settle → glow → fade
+                    'arrived': False,
+                })
+            line_idx += 1
 
     def _quit_app(self):
         # Save window position
