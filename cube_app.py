@@ -1,52 +1,90 @@
 #!/usr/bin/env python3
 """
 Hermes Cube — Desktop Particle Avatar
-System tray app with animated 3D particle cube
+System tray app with animated 3D particle cube.
+
+Architecture:
+  - ConfigManager: loads/saves typed config with defaults
+  - ShapeGenerator: pure functions that map cube points → target shapes
+  - ParticleAnimation: numpy-vectorized wave/breathe/orbit/geyser routines
+  - CubeEngine: orchestrates shapes + animation + rotation → 3D → 2D projection
+  - CubeApp: Tkinter window, event loop, rendering pipeline
+  - SettingsWindow: scrollable real-time settings panel
 """
 
-import numpy as np
-import math
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple
+
 import json
+import math
 import os
 import sys
 import threading
+
+import numpy as np
+from numpy.typing import NDArray
+
 import tkinter as tk
-from tkinter import ttk, colorchooser
+from tkinter import ttk
 from PIL import Image, ImageDraw
 
-# Windows-specific: принудительный показ окна через Win32 API
+# ---------------------------------------------------------------------------
+# Platform helpers
+# ---------------------------------------------------------------------------
+
 if sys.platform == 'win32':
     import ctypes
     from ctypes import wintypes
-    user32 = ctypes.windll.user32
-    # Устанавливаем типы аргументов для Win32-функций
-    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
-    user32.GetWindowLongW.restype = ctypes.c_long
-    user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
-    user32.SetWindowLongW.restype = ctypes.c_long
-    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
-    user32.SetWindowPos.restype = ctypes.c_bool
-    user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, ctypes.c_uint32, ctypes.c_byte, ctypes.c_uint32]
-    user32.SetLayeredWindowAttributes.restype = ctypes.c_bool
-    user32.MoveWindow.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_bool]
-    user32.MoveWindow.restype = ctypes.c_bool
-    user32.InvalidateRect.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.c_bool]
-    user32.InvalidateRect.restype = ctypes.c_bool
-    user32.UpdateWindow.argtypes = [wintypes.HWND]
-    user32.UpdateWindow.restype = ctypes.c_bool
+
+    _user32 = ctypes.windll.user32
+    _user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    _user32.GetWindowLongW.restype = ctypes.c_long
+    _user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+    _user32.SetWindowLongW.restype = ctypes.c_long
+    _user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                     ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    _user32.SetWindowPos.restype = ctypes.c_bool
+    _user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, ctypes.c_uint32, ctypes.c_byte,
+                                                   ctypes.c_uint32]
+    _user32.SetLayeredWindowAttributes.restype = ctypes.c_bool
+    _user32.InvalidateRect.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.c_bool]
+    _user32.InvalidateRect.restype = ctypes.c_bool
+    _user32.UpdateWindow.argtypes = [wintypes.HWND]
+    _user32.UpdateWindow.restype = ctypes.c_bool
 else:
-    user32 = None
+    _user32 = None  # type: ignore[assignment]
+
 try:
     import pystray
 except ImportError:
-    pystray = None
+    pystray = None  # type: ignore[assignment]
 
-# ─── Config ───────────────────────────────────────────────────────────
-CONFIG_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'HermesCube')
-CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
+# ---------------------------------------------------------------------------
+# Constants & configuration
+# ---------------------------------------------------------------------------
+
+APPDATA_DIR: str = os.environ.get('APPDATA', os.path.expanduser('~'))
+CONFIG_DIR: str = os.path.join(APPDATA_DIR, 'HermesCube')
+CONFIG_FILE: str = os.path.join(CONFIG_DIR, 'config.json')
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
-DEFAULT_CONFIG = {
+TRANSPARENT_COLOR: str = '#000001'
+TRANSPARENT_RGB: int = 0x000100  # BGR little-endian: (0, 1, 0)
+
+#: Particle tile size constraints (px)
+MIN_CELL_SIZE: int = 2
+MAX_CELL_SIZE: int = 12
+MIN_DENSITY: int = 6
+MAX_DENSITY: int = 20
+
+#: Rendering interval (~24 fps)
+FRAME_MS: int = 42
+
+#: How long the hint overlay stays visible (ms)
+HINT_DURATION_MS: int = 5000
+
+DEFAULT_CONFIG: Dict[str, Any] = {
     'window_width': 400,
     'window_height': 400,
     'rotation_speed': 0.28,
@@ -54,366 +92,815 @@ DEFAULT_CONFIG = {
     'pulse_amplitude': 0.12,
     'particle_density': 12,
     'cell_size': 6,
-    'cube_scale': 0.27,         # base multiplier: 0.1 = tiny, 0.6 = huge
-    'symbol': 'square',       # 'square', 'circle', 'dot'
-    'shape_preset': 'cube',   # 'cube', 'sphere', 'torus', 'dna', 'metaball'
-    'morph_progress': 0.0,    # 0 = cube, 1 = target shape
+    'cube_scale': 0.27,
+    'symbol': 'square',         # 'square' | 'circle' | 'dot'
+    'shape_preset': 'cube',     # 'cube' | 'sphere' | 'torus' | 'dna' | 'metaball'
+    'morph_progress': 0.0,      # 0 = cube, 1 = target shape
+    'particle_mode': 'off',     # 'off' | 'wave' | 'breathe' | 'orbit' | 'geyser'
+    'wave_speed': 1.5,          # speed multiplier for particle animation
+    'wave_amp': 0.12,           # displacement amplitude for particle animation
     'always_on_top': True,
     'x': None,
     'y': None,
 }
 
+#: Predefined colour palette for agent sprites
+AGENT_PALETTE: Dict[str, str] = {
+    'bg': TRANSPARENT_COLOR,
+    'skin': '#ffcc00',
+    'eye': '#cc8800',
+    'mouth': '#ff3300',
+    'accent': '#ff6600',
+}
 
-def load_config():
+# ---------------------------------------------------------------------------
+# Config manager (simple repository pattern)
+# ---------------------------------------------------------------------------
+
+def load_config() -> Dict[str, Any]:
+    """Load config from disk, filling missing keys with defaults."""
     try:
-        with open(CONFIG_FILE, 'r') as f:
-            cfg = json.load(f)
-            for k, v in DEFAULT_CONFIG.items():
-                cfg.setdefault(k, v)
-            return cfg
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            cfg: Dict[str, Any] = json.load(f)
+        for key, value in DEFAULT_CONFIG.items():
+            cfg.setdefault(key, value)
+        return cfg
     except (FileNotFoundError, json.JSONDecodeError):
         return dict(DEFAULT_CONFIG)
 
 
-def save_config(cfg):
-    with open(CONFIG_FILE, 'w') as f:
+def save_config(cfg: Dict[str, Any]) -> None:
+    """Persist config to disk."""
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2)
 
 
-# ─── Shape generators ────────────────────────────────────────────
-SHAPE_GENERATORS = {}
+# ---------------------------------------------------------------------------
+# Shape generators — pure functions mapping cube grid → target shape
+# ---------------------------------------------------------------------------
 
-def _register_shape(name):
-    def decorator(fn):
-        SHAPE_GENERATORS[name] = fn
-        return fn
-    return decorator
+PointArray = NDArray[np.float64]  # shape (N, 3)
 
 
-def _gen_cube(pts_cube):
-    """Identity — points stay as cube."""
-    return pts_cube.copy()
+def _gen_cube(points: PointArray) -> PointArray:
+    """Identity — points stay as unit cube [-1, 1]."""
+    return points.copy()
 
 
-def _gen_sphere(pts_cube):
-    """Normalize cube points to unit sphere."""
-    norms = np.linalg.norm(pts_cube, axis=1, keepdims=True)
-    norms = np.clip(norms, 1e-8, None)
-    return pts_cube / norms
+def _gen_sphere(points: PointArray) -> PointArray:
+    """Normalise cube points onto unit sphere surface."""
+    norms: NDArray[np.float64] = np.linalg.norm(points, axis=1, keepdims=True)
+    return points / np.clip(norms, 1e-8, None)
 
 
-def _gen_torus(pts_cube):
-    """Map cube grid onto a torus."""
-    x, y, z = pts_cube[:, 0], pts_cube[:, 1], pts_cube[:, 2]
-    R, r = 1.5, 0.5  # major / minor radius
-    theta = np.arctan2(z, x)
-    phi = np.arcsin(np.clip(y, -1, 1)) * 2
-    out = np.zeros_like(pts_cube)
-    out[:, 0] = (R + r * np.cos(phi)) * np.cos(theta)
-    out[:, 1] = r * np.sin(phi)
-    out[:, 2] = (R + r * np.cos(phi)) * np.sin(theta)
-    return out
+def _gen_torus(points: PointArray) -> PointArray:
+    """Map cube grid onto a torus (major radius R, minor r)."""
+    x, y, z = points[:, 0], points[:, 1], points[:, 2]
+    R: float = 1.5
+    r: float = 0.5
+    theta: NDArray[np.float64] = np.arctan2(z, x)
+    phi: NDArray[np.float64] = np.arcsin(np.clip(y, -1, 1)) * 2.0
+    result = np.zeros_like(points)
+    result[:, 0] = (R + r * np.cos(phi)) * np.cos(theta)
+    result[:, 1] = r * np.sin(phi)
+    result[:, 2] = (R + r * np.cos(phi)) * np.sin(theta)
+    return result
 
 
-def _gen_dna(pts_cube):
-    """DNA double-helix twist."""
-    x, y, z = pts_cube[:, 0], pts_cube[:, 1], pts_cube[:, 2]
-    twists = 3.0
-    angle = z * twists * np.pi
-    radius = 0.7 + 0.3 * np.abs(np.sin(angle * 0.5))
-    out = np.zeros_like(pts_cube)
-    out[:, 0] = radius * np.cos(angle)
-    out[:, 1] = y * 0.5
-    out[:, 2] = radius * np.sin(angle)
-    return out
+def _gen_dna(points: PointArray) -> PointArray:
+    """Double-helix twist with variable radius."""
+    x, y, z = points[:, 0], points[:, 1], points[:, 2]
+    twists: float = 3.0
+    angle: NDArray[np.float64] = z * twists * np.pi
+    radius: NDArray[np.float64] = 0.7 + 0.3 * np.abs(np.sin(angle * 0.5))
+    result = np.zeros_like(points)
+    result[:, 0] = radius * np.cos(angle)
+    result[:, 1] = y * 0.5
+    result[:, 2] = radius * np.sin(angle)
+    return result
 
 
-def _gen_metaball(pts_cube):
-    """Metaball-like organic blobs."""
-    x, y, z = pts_cube[:, 0], pts_cube[:, 1], pts_cube[:, 2]
-    # Multiple attractor points create organic shapes
-    attractors = [
+def _gen_metaball(points: PointArray) -> PointArray:
+    """Organic blob via 4 attractor points (metaball isosurface approximation)."""
+    x, y, z = points[:, 0], points[:, 1], points[:, 2]
+    attractors: List[Tuple[float, float, float, float]] = [
         (0.5, 0.5, 0.5, 0.6),
         (-0.5, -0.5, 0.5, 0.6),
         (0.5, -0.5, -0.5, 0.6),
         (-0.5, 0.5, -0.5, 0.6),
     ]
-    field = np.zeros(len(pts_cube))
+    field: NDArray[np.float64] = np.zeros(len(points))
     for ax, ay, az, strength in attractors:
-        dist = np.sqrt((x - ax)**2 + (y - ay)**2 + (z - az)**2)
+        dist: NDArray[np.float64] = np.sqrt(
+            (x - ax) ** 2 + (y - ay) ** 2 + (z - az) ** 2
+        )
         field += strength / (dist + 0.1)
-    # Normalize field and push points toward isosurface
-    field = field / np.max(field)
-    scale = 0.6 + 0.4 * field
-    out = pts_cube.copy()
-    out[:, 0] *= scale
-    out[:, 1] *= scale
-    out[:, 2] *= scale
-    return out
+    field /= field.max()
+    scale: NDArray[np.float64] = 0.6 + 0.4 * field
+    result = points.copy()
+    result[:, 0] *= scale
+    result[:, 1] *= scale
+    result[:, 2] *= scale
+    return result
 
 
-# ─── Register all shapes ─────────────────────────────────────────
-SHAPE_LIST = ['cube', 'sphere', 'torus', 'dna', 'metaball']
+#: Lookup table: name → generator function
+SHAPE_GENERATORS: Dict[str, Any] = {
+    'cube': _gen_cube,
+    'sphere': _gen_sphere,
+    'torus': _gen_torus,
+    'dna': _gen_dna,
+    'metaball': _gen_metaball,
+}
+
+# ---------------------------------------------------------------------------
+# Particle animation — numpy-vectorised displacement routines
+# ---------------------------------------------------------------------------
 
 
-# ─── Cube Particles Engine ────────────────────────────────────────────
+def _animate_wave(points: PointArray, t: float, speed: float, amp: float) -> PointArray:
+    """3D Lissajous wave field across all particles."""
+    result = points.copy()
+    if amp < 0.001:
+        return result
+    w1: NDArray[np.float64] = np.sin(points[:, 1] * 3.0 + t * speed * 2.5) * amp
+    w2: NDArray[np.float64] = np.cos(points[:, 0] * 2.5 + t * speed * 1.7) * amp * 0.7
+    w3: NDArray[np.float64] = np.sin(points[:, 2] * 3.2 + t * speed * 2.0) * amp * 0.5
+    result[:, 0] += w1 * 0.5 + np.cos(points[:, 2] * 2.0 + t * speed * 1.3) * amp * 0.3
+    result[:, 1] += w2 + np.sin(points[:, 0] * 3.0 + t * speed * 1.1) * amp * 0.4
+    result[:, 2] += w3 + np.cos(points[:, 1] * 2.8 + t * speed * 1.9) * amp * 0.3
+    return result
+
+
+def _animate_breathe(points: PointArray, t: float, speed: float, amp: float) -> PointArray:
+    """Each particle oscillates along its own phase axis."""
+    if amp < 0.001:
+        return points.copy()
+    phase: NDArray[np.float64] = (
+        points[:, 0] * 1.7 + points[:, 1] * 2.3 + points[:, 2] * 1.1
+    )
+    result = points.copy()
+    result[:, 0] += np.sin(phase + t * speed * 1.5) * amp
+    result[:, 1] += np.cos(phase * 1.3 + t * speed * 1.1) * amp
+    result[:, 2] += np.sin(phase * 0.7 + t * speed * 1.8) * amp
+    return result
+
+
+def _animate_orbit(points: PointArray, t: float, speed: float, amp: float) -> PointArray:
+    """Particles orbit their rest positions in 3D spirals."""
+    if amp < 0.001:
+        return points.copy()
+    phase: NDArray[np.float64] = (
+        points[:, 0] * 2.7 + points[:, 1] * 3.1 + points[:, 2] * 1.9
+    )
+    result = points.copy()
+    result[:, 0] += (np.cos(phase + t * speed) * amp
+                     + np.sin(phase * 0.5 + t * speed * 0.9) * amp * 0.4)
+    result[:, 1] += np.sin(phase * 1.3 + t * speed * 0.7) * amp
+    result[:, 2] += (np.cos(phase * 0.7 + t * speed * 1.4) * amp
+                     + np.cos(phase * 0.9 + t * speed * 1.1) * amp * 0.4)
+    return result
+
+
+def _animate_geyser(points: PointArray, t: float, speed: float, amp: float) -> PointArray:
+    """Particles stream upward, spreading at the top like a geyser."""
+    if amp < 0.001:
+        return points.copy()
+    height: NDArray[np.float64] = (points[:, 1] + 1.0) * 0.5  # 0 = bottom, 1 = top
+    spray: NDArray[np.float64] = np.sin(
+        t * speed * 2.5 + points[:, 0] * 4.0 + points[:, 2] * 4.0
+    )
+    spread: NDArray[np.float64] = spray * amp * (0.3 + height * 0.7)
+    result = points.copy()
+    result[:, 0] += spread
+    result[:, 2] += spread
+    wobble: NDArray[np.float64] = np.sin(
+        t * speed * 3.0 + points[:, 0] * 5.0 + points[:, 2] * 5.0
+    )
+    result[:, 1] += wobble * amp * 0.25 * height
+    return result
+
+
+#: Lookup table: animation name → displacement function
+PARTICLE_ANIMATORS: Dict[str, Any] = {
+    'off': lambda p, t, s, a: p.copy(),
+    'wave': _animate_wave,
+    'breathe': _animate_breathe,
+    'orbit': _animate_orbit,
+    'geyser': _animate_geyser,
+}
+
+# ---------------------------------------------------------------------------
+# Rotation utilities (3×3 matrices, numpy-vectorised)
+# ---------------------------------------------------------------------------
+
+
+def _rotate_x(points: PointArray, angle: float) -> PointArray:
+    c, s = math.cos(angle), math.sin(angle)
+    y = points[:, 1] * c - points[:, 2] * s
+    z = points[:, 1] * s + points[:, 2] * c
+    result = points.copy()
+    result[:, 1] = y
+    result[:, 2] = z
+    return result
+
+
+def _rotate_y(points: PointArray, angle: float) -> PointArray:
+    c, s = math.cos(angle), math.sin(angle)
+    x = points[:, 0] * c + points[:, 2] * s
+    z = -points[:, 0] * s + points[:, 2] * c
+    result = points.copy()
+    result[:, 0] = x
+    result[:, 2] = z
+    return result
+
+
+def _rotate_z(points: PointArray, angle: float) -> PointArray:
+    c, s = math.cos(angle), math.sin(angle)
+    x = points[:, 0] * c - points[:, 1] * s
+    y = points[:, 0] * s + points[:, 1] * c
+    result = points.copy()
+    result[:, 0] = x
+    result[:, 1] = y
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CubeEngine — orchestrates shape → morph → animate → rotate → colour
+# ---------------------------------------------------------------------------
+
+
 class CubeEngine:
-    def __init__(self, density=12):
-        self.density = density
-        self._build_particles()
-        self._cache_shapes()
+    """
+    Pure-computation engine: no Tkinter or windowing.
 
-    def _build_particles(self):
-        pts = []
-        N = self.density
-        for face in range(6):
-            u = np.linspace(-1, 1, N)
-            v = np.linspace(-1, 1, N)
-            for ui in u:
-                for vi in v:
-                    if face == 0:   pts.append(( 1,  ui,  vi))
-                    elif face == 1: pts.append((-1,  vi,  ui))
-                    elif face == 2: pts.append(( ui,  1,  vi))
-                    elif face == 3: pts.append(( ui, -1,  vi))
-                    elif face == 4: pts.append(( ui,  vi,  1))
-                    elif face == 5: pts.append(( ui,  vi, -1))
+    Responsibilities:
+      1. Generate cube grid points with per-vertex RGB colour
+      2. Cache target shape positions
+      3. Apply morph interpolation, particle animation, and 3D rotation
+      4. Return projected 2D positions, depth, and colours for the renderer
+    """
 
-        self.pts = np.array(pts, dtype=np.float64)
-        self.r0 = ((self.pts[:, 0] + 1) / 2 * 255).astype(np.float64)
-        self.g0 = ((self.pts[:, 1] + 1) / 2 * 255).astype(np.float64)
-        self.b0 = ((self.pts[:, 2] + 1) / 2 * 255).astype(np.float64)
+    def __init__(self, density: int = MIN_DENSITY) -> None:
+        self.density: int = density
+        self.pts: Optional[PointArray] = None
+        self.r0: Optional[NDArray[np.float64]] = None
+        self.g0: Optional[NDArray[np.float64]] = None
+        self.b0: Optional[NDArray[np.float64]] = None
+        self.jx: Optional[NDArray[np.float64]] = None
+        self.jy: Optional[NDArray[np.float64]] = None
+        self.shape_cache: Dict[str, PointArray] = {}
+        self._rebuild()
 
-        np.random.seed(42)
-        self.jx = (np.random.rand(len(self.pts)) - 0.5) * 0.3
-        np.random.seed(43)
-        self.jy = (np.random.rand(len(self.pts)) - 0.5) * 0.3
-        self._cache_shapes()
+    # ── Grid generation ────────────────────────────────────────────────
 
-    def _cache_shapes(self):
-        self.shape_cache = {}
-        for name in SHAPE_LIST:
-            if name == 'cube':
-                self.shape_cache[name] = self.pts.copy()
-            else:
-                gen = SHAPE_GENERATORS.get(name)
-                if gen:
-                    self.shape_cache[name] = gen(self.pts)
+    def _rebuild(self) -> None:
+        """(Re)generate cube points, vertex colours, jitter, and shape cache."""
+        self.pts = self._generate_cube_grid(self.density)
+        self.r0 = ((self.pts[:, 0] + 1.0) / 2.0 * 255.0)
+        self.g0 = ((self.pts[:, 1] + 1.0) / 2.0 * 255.0)
+        self.b0 = ((self.pts[:, 2] + 1.0) / 2.0 * 255.0)
 
-    def recalc(self, cfg):
-        N = cfg.get('particle_density', 12)
-        if N != self.density:
-            self.density = N
-            self._build_particles()
-            self._cache_shapes()
+        rng_jx = np.random.default_rng(42)
+        self.jx = (rng_jx.random(len(self.pts)) - 0.5) * 0.3
+        rng_jy = np.random.default_rng(43)
+        self.jy = (rng_jy.random(len(self.pts)) - 0.5) * 0.3
 
-    def get_frame(self, t, cfg):
-        speed = cfg.get('rotation_speed', 0.28)
-        pulse_rate = cfg.get('pulse_rate', 1.8)
-        pulse_amp = cfg.get('pulse_amplitude', 0.12)
-        morph = cfg.get('morph_progress', 0.0)
-        shape = cfg.get('shape_preset', 'cube')
+        self._refresh_shape_cache()
 
-        ang_x = t * 0.20 * (speed / 0.28)
-        ang_y = t * speed
-        ang_z = t * 0.08 * (speed / 0.28)
+    @staticmethod
+    def _generate_cube_grid(n: int) -> PointArray:
+        """
+        Build an (N*N*6, 3) array of evenly-spaced points on the 6 faces
+        of a unit cube [-1, 1].
+        """
+        pts: List[Tuple[float, float, float]] = []
+        u: NDArray[np.float64] = np.linspace(-1.0, 1.0, n)
+        v: NDArray[np.float64] = np.linspace(-1.0, 1.0, n)
+        for ui in u:
+            for vi in v:
+                pts.append((1.0, ui, vi))    # +X
+                pts.append((-1.0, vi, ui))   # -X
+                pts.append((ui, 1.0, vi))    # +Y
+                pts.append((ui, -1.0, vi))   # -Y
+                pts.append((ui, vi, 1.0))    # +Z
+                pts.append((ui, vi, -1.0))   # -Z
+        return np.array(pts, dtype=np.float64)
 
-        pulse = 1.0 + pulse_amp * math.sin(t * pulse_rate)
+    # ── Shape cache ────────────────────────────────────────────────────
 
-        cx, sx = math.cos(ang_x), math.sin(ang_x)
-        cy, sy = math.cos(ang_y), math.sin(ang_y)
-        cz, sz = math.cos(ang_z), math.sin(ang_z)
+    def _refresh_shape_cache(self) -> None:
+        """Pre-compute all registered shapes from current cube grid."""
+        assert self.pts is not None
+        self.shape_cache.clear()
+        for name, gen in SHAPE_GENERATORS.items():
+            self.shape_cache[name] = gen(self.pts)
 
-        # Base cube positions
-        cube_pts = self.pts
-        # Target shape positions
-        target = self.shape_cache.get(shape, cube_pts)
-        # Morph: interpolate
+    # ── Public interface ───────────────────────────────────────────────
+
+    def recalc(self, cfg: Dict[str, Any]) -> None:
+        """Rebuild particle grid if density changed."""
+        new_density: int = int(cfg.get('particle_density', MIN_DENSITY))
+        if new_density != self.density:
+            self.density = new_density
+            self._rebuild()
+
+    def get_frame(
+        self,
+        t: float,
+        cfg: Dict[str, Any],
+    ) -> Tuple[PointArray, float]:
+        """
+        Compute the current frame: shape → morph → animate → rotate.
+
+        Returns:
+            (projected_3d, pulse): (N, 3) array where columns are
+            (screen_x, screen_y, depth_z), and pulse is a 0-1 amplitude
+            multiplier.
+        """
+        speed: float = cfg.get('rotation_speed', 0.28)
+        pulse_rate: float = cfg.get('pulse_rate', 1.8)
+        pulse_amp: float = cfg.get('pulse_amplitude', 0.12)
+        morph: float = cfg.get('morph_progress', 0.0)
+        shape_name: str = cfg.get('shape_preset', 'cube')
+        anim_name: str = cfg.get('particle_mode', 'off')
+        anim_speed: float = cfg.get('wave_speed', 1.5)
+        anim_amp: float = cfg.get('wave_amp', 0.12)
+
+        # Pulse
+        pulse: float = 1.0 + pulse_amp * math.sin(t * pulse_rate)
+
+        # Shape morph
+        assert self.pts is not None
+        target: PointArray = self.shape_cache.get(shape_name, self.pts)
         if morph > 0.0:
-            pts_now = cube_pts * (1.0 - morph) + target * morph
+            points: PointArray = self.pts * (1.0 - morph) + target * morph
         else:
-            pts_now = cube_pts
+            points = self.pts.copy()
 
-        x, y, z = pts_now[:, 0].copy(), pts_now[:, 1].copy(), pts_now[:, 2].copy()
+        # Particle animation (before rotation, in local space)
+        anim_fn = PARTICLE_ANIMATORS.get(anim_name, PARTICLE_ANIMATORS['off'])
+        points = anim_fn(points, t, anim_speed, anim_amp)
 
-        # Rot X
-        y1 = y * cx - z * sx
-        z1 = y * sx + z * cx
-        # Rot Y
-        x2 = x * cy + z1 * sy
-        z2 = -x * sy + z1 * cy
-        # Rot Z
-        x3 = x2 * cz - y1 * sz
-        y3 = x2 * sz + y1 * cz
+        # 3D rotation
+        ang_x: float = t * 0.20 * (speed / 0.28)
+        ang_y: float = t * speed
+        ang_z: float = t * 0.08 * (speed / 0.28)
+        points = _rotate_x(points, ang_x)
+        points = _rotate_y(points, ang_y)
+        points = _rotate_z(points, ang_z)
 
-        return np.column_stack([x3, y3, z2]), pulse
+        return points, pulse
 
 
-# ─── Main Application ─────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Tray icon (pystray, optional)
+# ---------------------------------------------------------------------------
+
+
+def _create_tray_image() -> Image.Image:
+    """Build a 64×64 RGBA icon: tiny RGB pixel cube + diamond symbol."""
+    img: Image.Image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    pixel_data: List[Tuple[int, int, int, int, int]] = [
+        (16, 8, 255, 50, 50), (18, 8, 255, 100, 50), (20, 8, 50, 255, 50),
+        (22, 8, 50, 200, 100), (24, 8, 50, 50, 255), (26, 8, 100, 50, 200),
+        (28, 8, 200, 50, 100), (14, 10, 255, 80, 80), (16, 10, 255, 150, 50),
+        (18, 10, 100, 255, 100), (20, 10, 80, 200, 120), (22, 10, 80, 80, 255),
+        (24, 10, 150, 50, 200), (26, 10, 200, 80, 150), (28, 10, 200, 100, 100),
+        (30, 10, 150, 150, 50), (12, 12, 255, 100, 100), (14, 12, 255, 200, 80),
+        (16, 12, 150, 255, 150), (18, 12, 100, 255, 200), (20, 12, 100, 100, 255),
+        (22, 12, 200, 80, 255), (24, 12, 255, 100, 200), (26, 12, 255, 150, 100),
+        (28, 12, 200, 200, 80), (30, 12, 150, 200, 100),
+    ]
+    for px, py, r, g, b in pixel_data:
+        draw.rectangle([px, py, px + 3, py + 3], fill=(r, g, b, 255))
+    draw.text((2, 52), '♢', fill=(150, 150, 255, 200))
+    return img
+
+
+def _setup_tray_icon(
+    app_ref: Any,
+) -> Optional[Any]:
+    """
+    Create a system-tray icon with menu.
+
+    Returns the pystray Icon instance, or None if pystray is unavailable.
+    """
+    if pystray is None:
+        return None
+    image = _create_tray_image()
+    menu = pystray.Menu(
+        pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
+        pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
+    )
+    icon = pystray.Icon('HermesCube', image, '♢ Hermes Cube', menu)
+    if hasattr(icon, 'run_detached'):
+        icon.run_detached()
+    else:
+        threading.Thread(target=icon.run, daemon=False).start()
+    return icon
+
+
+# ---------------------------------------------------------------------------
+# Settings window — real-time controls with scrollable layout
+# ---------------------------------------------------------------------------
+
+#: Shared colour values for settings UI
+UI_BG: str = '#1a1a2e'
+UI_FG: str = '#e0e0e0'
+UI_ACCENT: str = '#e94560'
+UI_ACTIVE: str = '#0f3460'
+
+
+class SettingsWindow:
+    """Modal settings panel with instant-apply sliders and dropdowns."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+        self.config: Dict[str, Any] = dict(app.config)
+
+        self.window = tk.Toplevel(app.root)
+        self.window.title('⚙ Hermes Cube — Настройки')
+        self.window.geometry('420x500')
+        self.window.resizable(True, True)
+        self.window.configure(bg=UI_BG)
+        self.window.transient(app.root)
+        self.window.grab_set()
+
+        # Grid columns
+        self.window.columnconfigure(0, weight=0)
+        self.window.columnconfigure(1, weight=1)
+        self.window.columnconfigure(2, weight=0)
+
+        # ─── UI sections ────────────────────────────────────────────
+        row: int = 0
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure('TLabel', background=UI_BG, foreground=UI_FG,
+                        font=('Segoe UI', 10))
+        style.configure('TScale', background=UI_BG)
+
+        row = self._add_title(row)
+        row = self._add_slider('cube_scale', 'Размер куба', 0.08, 0.6, row)
+        row = self._add_slider('rotation_speed', 'Скорость вращения', 0.05, 1.0, row)
+        row = self._add_slider('pulse_rate', 'Частота пульсации', 0.3, 5.0, row)
+        row = self._add_slider('pulse_amplitude', 'Амплитуда пульсации', 0.0, 0.35, row)
+
+        row = self._add_section('Форма', row)
+        row = self._add_dropdown('shape_preset', 'Пресет формы',
+                                 ['cube', 'sphere', 'torus', 'dna', 'metaball'], row)
+        row = self._add_slider('morph_progress', 'Морфинг (куб → форма)', 0.0, 1.0, row)
+
+        row = self._add_section('Анимация частиц', row)
+        row = self._add_dropdown('particle_mode', 'Режим',
+                                 ['off', 'wave', 'breathe', 'orbit', 'geyser'], row)
+        row = self._add_slider('wave_speed', 'Скорость анимации', 0.2, 5.0, row)
+        row = self._add_slider('wave_amp', 'Амплитуда смещения', 0.0, 0.5, row)
+
+        row = self._add_section('Частицы', row)
+        row = self._add_slider('particle_density', 'Плотность', MIN_DENSITY, MAX_DENSITY, row, 0)
+        row = self._add_slider('cell_size', 'Размер (px)', MIN_CELL_SIZE, MAX_CELL_SIZE, row, 0)
+
+        row = self._add_section('Стиль', row)
+        row = self._add_dropdown('symbol', 'Форма частиц', ['square', 'circle', 'dot'], row)
+
+        row = self._add_topmost_checkbox(row)
+        self._add_buttons(row)
+
+    # ── UI helpers ─────────────────────────────────────────────────
+
+    def _add_title(self, row: int) -> int:
+        tk.Label(self.window, text='♢ Hermes Cube', fg=UI_ACCENT, bg=UI_BG,
+                 font=('Segoe UI', 14, 'bold')).grid(
+            row=row, column=0, columnspan=3, pady=(15, 5))
+        row += 1
+        tk.Label(self.window, text='Настройки аватара', fg='#888', bg=UI_BG,
+                 font=('Segoe UI', 9)).grid(
+            row=row, column=0, columnspan=3)
+        row += 1
+        ttk.Separator(self.window, orient='horizontal').grid(
+            row=row, column=0, columnspan=3, sticky='ew', padx=15, pady=8)
+        return row + 1
+
+    def _add_section(self, title: str, row: int) -> int:
+        tk.Label(self.window, text=title, fg=UI_FG, bg=UI_BG,
+                 font=('Segoe UI', 10, 'bold')).grid(
+            row=row, column=0, sticky='w', padx=15, pady=(10, 2))
+        return row + 1
+
+    def _add_slider(self, key: str, label: str,
+                    min_v: float, max_v: float, row: int,
+                    digits: int = 2) -> int:
+        tk.Label(self.window, text=label, fg=UI_FG, bg=UI_BG,
+                 font=('Segoe UI', 9)).grid(
+            row=row, column=0, sticky='w', padx=(15, 5))
+        var = tk.DoubleVar(value=self.config.get(key, 0.0))
+
+        def on_change(val: str, k: str = key, v: tk.DoubleVar = var) -> None:
+            self.config[k] = float(val)
+            self.app.config[k] = float(val)
+            if k == 'particle_density':
+                self.app.config['particle_density'] = int(self.config[k])
+                self.app.engine.recalc(self.app.config)
+            elif k == 'cell_size':
+                self.app.config['cell_size'] = max(MIN_CELL_SIZE, int(float(val)))
+
+        scale = tk.Scale(self.window, from_=min_v, to=max_v,
+                         resolution=10 ** -digits,
+                         orient=tk.HORIZONTAL, variable=var, command=on_change,
+                         length=180, bg=UI_BG, fg=UI_FG,
+                         highlightbackground=UI_BG,
+                         troughcolor='#16213e', activebackground=UI_ACTIVE)
+        val_label = tk.Label(self.window, textvariable=var, fg=UI_ACCENT,
+                             bg=UI_BG, font=('Segoe UI', 9, 'bold'), width=4)
+        scale.grid(row=row, column=1, sticky='ew', padx=(3, 3), pady=2)
+        val_label.grid(row=row, column=2, sticky='w', padx=(0, 15))
+        return row + 1
+
+    def _add_dropdown(self, key: str, label: str,
+                      options: List[str], row: int) -> int:
+        tk.Label(self.window, text=label, fg=UI_FG, bg=UI_BG,
+                 font=('Segoe UI', 9)).grid(
+            row=row, column=0, sticky='w', padx=(15, 5))
+        var = tk.StringVar(value=self.config.get(key, options[0]))
+        dropdown = ttk.Combobox(self.window, textvariable=var,
+                                values=options, state='readonly', width=14)
+        dropdown.grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        def on_change(*_a: Any, k: str = key) -> None:
+            self.config[k] = var.get()
+            self.app.config[k] = var.get()
+
+        var.trace_add('write', on_change)
+        return row + 1
+
+    def _add_topmost_checkbox(self, row: int) -> int:
+        var = tk.BooleanVar(value=self.config.get('always_on_top', True))
+        cb = tk.Checkbutton(self.window, text='Поверх всех окон',
+                            variable=var, bg=UI_BG, fg=UI_FG,
+                            selectcolor='#16213e',
+                            activebackground=UI_BG, activeforeground=UI_FG,
+                            font=('Segoe UI', 9))
+        cb.grid(row=row, column=0, columnspan=3, sticky='w', padx=15, pady=8)
+
+        def on_change() -> None:
+            self.config['always_on_top'] = var.get()
+            self.app.config['always_on_top'] = var.get()
+            self.app.root.attributes('-topmost', var.get())
+
+        cb.configure(command=on_change)
+        return row + 1
+
+    def _add_buttons(self, row: int) -> None:
+        frame = tk.Frame(self.window, bg=UI_BG)
+        frame.grid(row=row, column=0, columnspan=3, pady=15)
+
+        def save() -> None:
+            # Coerce & round numeric values
+            for key in ('cell_size', 'particle_density'):
+                self.config[key] = int(self.config[key])
+            for key in ('rotation_speed', 'pulse_rate', 'pulse_amplitude'):
+                self.config[key] = round(self.config[key], 2)
+            self.config['cube_scale'] = round(self.config['cube_scale'], 3)
+            # Sync to app
+            for k, v in self.config.items():
+                self.app.config[k] = v
+            self.app.engine.recalc(self.app.config)
+            save_config(self.app.config)
+            self.window.destroy()
+
+        def cancel() -> None:
+            self.window.destroy()
+
+        for text, cmd, col in [
+            ('💾 Сохранить', save, 0),
+            ('✕ Отмена', cancel, 1),
+        ]:
+            btn = tk.Button(frame, text=text, command=cmd,
+                            bg=UI_ACTIVE, fg=UI_FG,
+                            activebackground=UI_ACCENT, activeforeground='#fff',
+                            relief=tk.FLAT, padx=12, pady=4,
+                            font=('Segoe UI', 9))
+            btn.grid(row=0, column=col, padx=5)
+
+
+# ---------------------------------------------------------------------------
+# CubeApp — main application controller
+# ---------------------------------------------------------------------------
+
+
 class CubeApp:
-    def __init__(self):
-        self.cfg = load_config()
-        self.engine = CubeEngine(self.cfg['particle_density'])
-        self.running = True
-        self.t0 = 0.0
-        self.frame_count = 0
+    """
+    Tkinter application driving the Hermes Cube overlay window.
+
+    Responsibilities:
+      - Window creation & configuration (transparent, overrideredirect)
+      - Canvas-based particle rendering pipeline
+      - Input binding (keyboard, mouse, tray)
+      - Animation loop
+    """
+
+    def __init__(self) -> None:
+        self.config: Dict[str, Any] = load_config()
+        self.engine = CubeEngine(self.config['particle_density'])
+
+        self.running: bool = True
+        self.anim_running: bool = False
+        self.t0: float = 0.0
+        self.frame_count: int = 0
+        self._show_hint: bool = True
+
         # --- Window ---
         self.root = tk.Tk()
         self.root.title('♢ Hermes Cube')
-        self.root.protocol('WM_DELETE_WINDOW', self.hide_window)
+        self.root.protocol('WM_DELETE_WINDOW', self._hide_window)
 
-        w, h = self.cfg['window_width'], self.cfg['window_height']
-        x, y = self.cfg.get('x'), self.cfg.get('y')
+        w: int = self.config['window_width']
+        h: int = self.config['window_height']
+        x: Optional[int] = self.config.get('x')
+        y: Optional[int] = self.config.get('y')
+        pos_x: int = x if x is not None else 100
+        pos_y: int = y if y is not None else 100
 
-        self.TRANSPARENT = '#000001'
-
-        # Точная копия рабочего теста — geometry + overrideredirect + transparent
-        pos_x = x if x is not None else 100
-        pos_y = y if y is not None else 100
-        geom = f'{w}x{h}+{pos_x}+{pos_y}'
-        self.root.geometry(geom)
+        self.root.geometry(f'{w}x{h}+{pos_x}+{pos_y}')
         self.root.resizable(True, True)
-        self.root.configure(bg=self.TRANSPARENT)
+        self.root.configure(bg=TRANSPARENT_COLOR)
         self.root.overrideredirect(True)
-        self.root.attributes('-transparentcolor', self.TRANSPARENT)
-        if self.cfg.get('always_on_top', True):
+        self.root.attributes('-transparentcolor', TRANSPARENT_COLOR)
+        if self.config.get('always_on_top', True):
             self.root.attributes('-topmost', True)
 
-        # --- Canvas for particle rendering ---
+        # --- Canvas ---
         self.canvas = tk.Canvas(
-            self.root, bg=self.TRANSPARENT, highlightthickness=0,
+            self.root, bg=TRANSPARENT_COLOR, highlightthickness=0,
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
-
-        # Единственный update — он применяет геометрию и маппит окно
         self.root.update()
 
-        self.particle_items = []
-        self.canvas_w = 0
-        self.canvas_h = 0
+        # Particle display items
+        self.particle_items: List[int] = []
+        self._current_symbol: str = 'square'
 
-        # --- Bind resize ---
+        # Drag state
+        self._drag_data: Dict[str, int] = {'x': 0, 'y': 0}
+
+        # Tray reference
+        self.tray_icon: Optional[Any] = None
+
+        # ─── Bindings ───────────────────────────────────────────────
         self.canvas.bind('<Configure>', self._on_resize)
-
-        # --- Drag window (overrideredirect = нет заголовка) ---
-        self._drag_data = {'x': 0, 'y': 0}
         self.canvas.bind('<Button-1>', self._drag_start)
         self.canvas.bind('<B1-Motion>', self._drag_move)
         self.canvas.bind('<Button-3>', self._show_context_menu)
-        # Double-click to show settings
         self.canvas.bind('<Double-Button-1>', lambda e: self.show_settings())
-        # Show hint text on startup
-        self._show_hint = True
 
-        # --- Keybinds ---
-        self.root.bind('<Escape>', lambda e: self.hide_window())
-        self.root.bind('q', lambda e: self.hide_window())
+        self.root.bind('<Escape>', lambda e: self._hide_window())
+        self.root.bind('q', lambda e: self._hide_window())
+        self.root.bind('h', lambda e: self._hide_window())
         self.root.bind('s', lambda e: self.show_settings())
-        self.root.bind('h', lambda e: self.hide_window())
 
-        # --- Context menu ---
-        self.context_menu = tk.Menu(self.root, tearoff=0, bg='#1a1a2e', fg='#e0e0e0',
-                                    activebackground='#0f3460', activeforeground='#fff')
-        self.context_menu.add_command(label='♢ Показать/Скрыть', command=self.toggle_window)
-        self.context_menu.add_command(label='⚙ Настройки', command=self.show_settings)
+        # ─── Context menu ───────────────────────────────────────────
+        self.context_menu = tk.Menu(
+            self.root, tearoff=0, bg=UI_BG, fg=UI_FG,
+            activebackground=UI_ACTIVE, activeforeground='#fff',
+        )
+        self.context_menu.add_command(
+            label='♢ Показать/Скрыть', command=self.toggle_window)
+        self.context_menu.add_command(
+            label='⚙ Настройки', command=self.show_settings)
         self.context_menu.add_separator()
-        self.context_menu.add_command(label='✕ Выход', command=self._quit_app)
+        self.context_menu.add_command(
+            label='✕ Выход', command=self.quit_app)
 
-        # --- Tray icon ---
-        self.tray_icon = None
-        threading.Thread(target=self._setup_tray, daemon=False).start()
+        # ─── Tray ───────────────────────────────────────────────────
+        threading.Thread(target=lambda: setattr(
+            self, 'tray_icon', _setup_tray_icon(self)), daemon=False).start()
 
-        # --- Start animation ---
-        self.t0 = 0.0
-        self.anim_running = False
+        # ─── Start animation ────────────────────────────────────────
         self.root.after(100, self._start_anim)
 
-    def _start_anim(self):
+    # ── Window visibility ──────────────────────────────────────────────
+
+    def show_window(self) -> None:
+        """Restore the overlay window."""
+        self.root.deiconify()
+        self.root.update_idletasks()
+        self.root.lift()
+        self.root.lift()
+        self.root.lift()
+        if self.config.get('always_on_top', True):
+            self.root.attributes('-topmost', True)
+        self.root.update()
+
+    def _hide_window(self) -> None:
+        """Hide the overlay window (keeps tray icon alive)."""
+        self.root.withdraw()
+
+    def toggle_window(self) -> None:
+        """Flip between hidden and visible."""
+        if self.root.state() == 'withdrawn':
+            self.show_window()
+        else:
+            self._hide_window()
+
+    # ── Drag & context menu ────────────────────────────────────────────
+
+    def _drag_start(self, event: tk.Event) -> None:
+        self._drag_data['x'] = event.x_root - self.root.winfo_x()
+        self._drag_data['y'] = event.y_root - self.root.winfo_y()
+
+    def _drag_move(self, event: tk.Event) -> None:
+        new_x: int = event.x_root - self._drag_data['x']
+        new_y: int = event.y_root - self._drag_data['y']
+        self.root.geometry(f'+{new_x}+{new_y}')
+
+    def _show_context_menu(self, event: tk.Event) -> None:
+        self.context_menu.tk_popup(
+            self.root.winfo_rootx() + event.x,
+            self.root.winfo_rooty() + event.y,
+        )
+
+    # ── Rendering pipeline ─────────────────────────────────────────────
+
+    def _start_anim(self) -> None:
         self.t0 = self.root.tk.call('clock', 'milliseconds')
         self.anim_running = True
-        # Убедимся что окно показано
         self.root.lift()
         self.root.lift()
         self.root.lift()
         self.root.update()
         self._render_frame()
 
-    def _on_resize(self, event):
-        self.canvas_w = event.width
-        self.canvas_h = event.height
+    def _on_resize(self, event: tk.Event) -> None:
+        """Cache canvas dimensions to avoid repeated winfo calls."""
+        pass  # Dimensions are read fresh each frame via winfo_width/height
 
-    def _drag_start(self, event):
-        self._drag_data['x'] = event.x_root - self.root.winfo_x()
-        self._drag_data['y'] = event.y_root - self.root.winfo_y()
-
-    def _drag_move(self, event):
-        x = event.x_root - self._drag_data['x']
-        y = event.y_root - self._drag_data['y']
-        self.root.geometry(f'+{x}+{y}')
-
-    def _show_context_menu(self, event):
-        self.context_menu.tk_popup(
-            self.root.winfo_rootx() + event.x,
-            self.root.winfo_rooty() + event.y
-        )
-
-    def _render_frame(self):
+    def _render_frame(self) -> None:
+        """Main render tick: compute → project → draw → schedule next."""
         if not self.anim_running or not self.running:
             return
 
-        now = self.root.tk.call('clock', 'milliseconds')
-        t = (now - self.t0) / 1000.0
-        w = max(10, self.canvas.winfo_width())
-        h = max(10, self.canvas.winfo_height())
+        now: float = self.root.tk.call('clock', 'milliseconds')
+        elapsed: float = (now - self.t0) / 1000.0
+        w: int = max(10, self.canvas.winfo_width())
+        h: int = max(10, self.canvas.winfo_height())
 
         if w < 10 or h < 10:
-            self.root.after(42, self._render_frame)
+            self.root.after(FRAME_MS, self._render_frame)
             return
 
-        pts3d, pulse = self.engine.get_frame(t, self.cfg)
+        pts3d, pulse = self.engine.get_frame(elapsed, self.config)
 
-        scale = min(w, h) * self.cfg.get('cube_scale', 0.27) / (1.0 + self.cfg.get('pulse_amplitude', 0.12)) * pulse
-        cx, cy = w / 2, h / 2
+        # Project 3D → 2D
+        scale: float = (min(w, h) * self.config.get('cube_scale', 0.27)
+                        / (1.0 + self.config.get('pulse_amplitude', 0.12))
+                        * pulse)
+        cx_s: float = w / 2.0
+        cy_s: float = h / 2.0
 
-        px = pts3d[:, 0] * scale + cx
-        py = pts3d[:, 1] * scale + cy
-        pz = pts3d[:, 2]
+        px: NDArray[np.float64] = pts3d[:, 0] * scale + cx_s
+        py: NDArray[np.float64] = pts3d[:, 1] * scale + cy_s
+        pz: NDArray[np.float64] = pts3d[:, 2]
 
-        # Depth sort (far → near for painters algorithm)
-        order = np.argsort(pz)
+        # Depth sort (painter's algorithm)
+        order: NDArray[np.int64] = np.argsort(pz)
         px, py, pz = px[order], py[order], pz[order]
 
-        r_p = np.clip(self.engine.r0[order] * (0.6 + 0.4 * (pz + 1) / 2), 0, 255)
-        g_p = np.clip(self.engine.g0[order] * (0.6 + 0.4 * (pz + 1) / 2), 0, 255)
-        b_p = np.clip(self.engine.b0[order] * (0.6 + 0.4 * (pz + 1) / 2), 0, 255)
+        # Per-particle colour with depth shading
+        depth_factor: float = 0.6 + 0.4 * (pz + 1.0) / 2.0
+        r_p: NDArray[np.float64]
+        g_p: NDArray[np.float64]
+        b_p: NDArray[np.float64]
+        r_p = np.clip(self.engine.r0[order] * depth_factor, 0, 255)
+        g_p = np.clip(self.engine.g0[order] * depth_factor, 0, 255)
+        b_p = np.clip(self.engine.b0[order] * depth_factor, 0, 255)
 
-        cell = max(3, self.cfg.get('cell_size', 6))
-        half = cell // 2
+        cell: int = max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE)))
+        half: int = cell // 2
+        symbol: str = self.config.get('symbol', 'square')
 
-        # Update or create canvas items
-        count = len(px)
-        symbol = self.cfg.get('symbol', 'square')
-
-        cell_actual = cell
-        half_actual = half
+        # Symbol-specific size adjustment
+        cell_actual: int = cell
+        half_actual: int = half
         if symbol == 'dot':
-            cell_actual = max(2, cell // 2)
+            cell_actual = max(MIN_CELL_SIZE, cell // 2)
             half_actual = cell_actual // 2
 
-        # Rebuild items if symbol changed
-        self._current_symbol = getattr(self, '_current_symbol', symbol)
+        count: int = len(px)
+
+        # Rebuild particle items if symbol changed
         if self._current_symbol != symbol:
             for item in self.particle_items:
                 self.canvas.delete(item)
             self.particle_items.clear()
             self._current_symbol = symbol
 
+        # Grow or shrink item pool
         while len(self.particle_items) < count:
-            if symbol == 'circle':
-                item = self.canvas.create_oval(
-                    0, 0, cell_actual, cell_actual,
-                    fill='#000000', outline='', width=0,
-                )
-            elif symbol == 'dot':
+            if symbol in ('circle', 'dot'):
                 item = self.canvas.create_oval(
                     0, 0, cell_actual, cell_actual,
                     fill='#000000', outline='', width=0,
@@ -427,295 +914,70 @@ class CubeApp:
         while len(self.particle_items) > count:
             self.canvas.delete(self.particle_items.pop())
 
+        # Update positions & colours
         for i in range(count):
-            x1 = int(px[i]) - half_actual
-            y1 = int(py[i]) - half_actual
-            x2 = x1 + cell_actual
-            y2 = y1 + cell_actual
-            color = f'#{int(r_p[i]):02x}{int(g_p[i]):02x}{int(b_p[i]):02x}'
-            self.canvas.coords(self.particle_items[i], x1, y1, x2, y2)
-            self.canvas.itemconfig(self.particle_items[i], fill=color)
-
-        # Show startup hint for 5 seconds
-        if self._show_hint:
-            hint = self.canvas.create_text(
-                w//2, h - 20,
-                text='Нажми S — настройки | H — скрыть | Двойной клик — меню',
-                fill='#e94560', font=('Segoe UI', 9),
-                anchor='center'
+            x1: int = int(px[i]) - half_actual
+            y1: int = int(py[i]) - half_actual
+            colour: str = f'#{int(r_p[i]):02x}{int(g_p[i]):02x}{int(b_p[i]):02x}'
+            self.canvas.coords(
+                self.particle_items[i],
+                x1, y1, x1 + cell_actual, y1 + cell_actual,
             )
-            self.root.after(5000, lambda: (
-                self.canvas.delete(hint) if self.canvas.winfo_exists() else None
-            ))
+            self.canvas.itemconfig(self.particle_items[i], fill=colour)
+
+        # Startup hint overlay
+        if self._show_hint:
+            hint_id = self.canvas.create_text(
+                w // 2, h - 20,
+                text='Нажми S — настройки  |  H — скрыть  |  Двойной клик — меню',
+                fill=UI_ACCENT, font=('Segoe UI', 9), anchor='center',
+            )
+            self.root.after(
+                HINT_DURATION_MS,
+                lambda: self.canvas.delete(hint_id) if self.canvas.winfo_exists() else None,
+            )
             self._show_hint = False
 
         self.frame_count += 1
-        self.root.after(42, self._render_frame)
+        self.root.after(FRAME_MS, self._render_frame)
 
-    def show_window(self):
-        self.root.deiconify()
-        self.root.update_idletasks()
-        self.root.lift()
-        self.root.lift()
-        self.root.lift()
-        if self.cfg.get('always_on_top', True):
-            self.root.attributes('-topmost', True)
-        self.root.update()
+    # ── Settings ───────────────────────────────────────────────────────
 
-    def hide_window(self):
-        self.root.withdraw()
-
-    def toggle_window(self):
-        if self.root.state() == 'withdrawn':
-            self.show_window()
-        else:
-            self.hide_window()
-
-    def _create_tray_image(self):
-        """Create a 64x64 tray icon — tiny RGB cube"""
-        img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        # Draw a pixelated 3D cube shape
-        pixels = [
-            (16, 8, 255, 50, 50),
-            (18, 8, 255, 100, 50),
-            (20, 8, 50, 255, 50),
-            (22, 8, 50, 200, 100),
-            (24, 8, 50, 50, 255),
-            (26, 8, 100, 50, 200),
-            (28, 8, 200, 50, 100),
-            (14, 10, 255, 80, 80),
-            (16, 10, 255, 150, 50),
-            (18, 10, 100, 255, 100),
-            (20, 10, 80, 200, 120),
-            (22, 10, 80, 80, 255),
-            (24, 10, 150, 50, 200),
-            (26, 10, 200, 80, 150),
-            (28, 10, 200, 100, 100),
-            (30, 10, 150, 150, 50),
-            (12, 12, 255, 100, 100),
-            (14, 12, 255, 200, 80),
-            (16, 12, 150, 255, 150),
-            (18, 12, 100, 255, 200),
-            (20, 12, 100, 100, 255),
-            (22, 12, 200, 80, 255),
-            (24, 12, 255, 100, 200),
-            (26, 12, 255, 150, 100),
-            (28, 12, 200, 200, 80),
-            (30, 12, 150, 200, 100),
-        ]
-        for x, y, r, g, b in pixels:
-            draw.rectangle([x, y, x+3, y+3], fill=(r, g, b, 255))
-
-        # Also draw the letter H
-        draw.text((2, 52), '♢', fill=(150, 150, 255, 200))
-        return img
-
-    def _setup_tray(self):
-        if pystray is None:
-            return  # pystray not installed, skip tray icon
-        image = self._create_tray_image()
-        menu = pystray.Menu(
-            pystray.MenuItem('♢ Показать/Скрыть', self._tray_show),
-            pystray.MenuItem('⚙ Настройки', self._tray_settings),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem('✕ Выход', self._tray_quit),
-        )
-        self.tray_icon = pystray.Icon('HermesCube', image, '♢ Hermes Cube', menu)
-        # Try run_detached (pystray >= 0.19.3), fallback to run() in thread
-        if hasattr(self.tray_icon, 'run_detached'):
-            self.tray_icon.run_detached()
-        else:
-            # Remove daemon so icon persists
-            self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=False)
-            self.tray_thread.start()
-
-    def _tray_show(self, icon, item):
-        self.root.after(0, self.toggle_window)
-
-    def _tray_settings(self, icon, item):
-        self.root.after(0, self.show_settings)
-
-    def _tray_quit(self, icon, item):
-        self.running = False
-        self.root.after(0, self._quit_app)
-
-    def show_settings(self):
+    def show_settings(self) -> None:
+        """Open the settings panel."""
         SettingsWindow(self)
 
-    def _quit_app(self):
-        # Save window position
-        self.cfg['x'] = self.root.winfo_x()
-        self.cfg['y'] = self.root.winfo_y()
-        self.cfg['window_width'] = self.root.winfo_width()
-        self.cfg['window_height'] = self.root.winfo_height()
-        save_config(self.cfg)
+    # ── Tray callbacks ─────────────────────────────────────────────────
+
+    def quit_app(self) -> None:
+        """Graceful shutdown: save config, stop tray, destroy window."""
+        self.config['x'] = self.root.winfo_x()
+        self.config['y'] = self.root.winfo_y()
+        self.config['window_width'] = self.root.winfo_width()
+        self.config['window_height'] = self.root.winfo_height()
+        save_config(self.config)
 
         self.anim_running = False
         self.running = False
-        if hasattr(self, 'tray_icon'):
+
+        if self.tray_icon is not None:
             try:
                 self.tray_icon.stop()
-            except:
+            except Exception:
                 pass
+
         self.root.destroy()
         os._exit(0)
 
-    def run(self):
+    def run(self) -> None:
+        """Enter the Tkinter event loop."""
         self.root.mainloop()
 
 
-# ─── Settings Window ──────────────────────────────────────────────────
-class SettingsWindow:
-    def __init__(self, app):
-        self.app = app
-        self.cfg = dict(app.cfg)
-        self.win = tk.Toplevel(app.root)
-        self.win.title('⚙ Hermes Cube — Настройки')
-        self.win.geometry('420x500')
-        self.win.resizable(True, True)
-        self.win.configure(bg='#1a1a2e')
-        self.win.transient(app.root)
-        self.win.grab_set()
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
-        # Column weights: label auto, slider expands, value fixed
-        self.win.columnconfigure(0, weight=0)
-        self.win.columnconfigure(1, weight=1)
-        self.win.columnconfigure(2, weight=0)
-
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure('TLabel', background='#1a1a2e', foreground='#e0e0e0', font=('Segoe UI', 10))
-        style.configure('TScale', background='#1a1a2e')
-
-        fg = '#e0e0e0'
-        bg = '#1a1a2e'
-        entry_bg = '#16213e'
-
-        row = 0
-
-        def add_label(text, r):
-            tk.Label(self.win, text=text, fg=fg, bg=bg,
-                     font=('Segoe UI', 10, 'bold')).grid(row=r, column=0,
-                     sticky='w', padx=15, pady=(10, 2))
-            return r + 1
-
-        def add_slider(key, label, min_v, max_v, r, digits=2):
-            tk.Label(self.win, text=label, fg=fg, bg=bg,
-                     font=('Segoe UI', 9)).grid(row=r, column=0, sticky='w', padx=(15, 5))
-            var = tk.DoubleVar(value=self.cfg.get(key, 1.0))
-            def on_change(val, k=key, v=var):
-                self.cfg[k] = float(val)
-                self.app.cfg[k] = float(val)
-                if k == 'particle_density':
-                    self.app.cfg['particle_density'] = int(self.cfg[k])
-                    self.app.engine.recalc(self.app.cfg)
-                elif k == 'cell_size':
-                    self.app.cfg['cell_size'] = max(2, int(float(val)))
-            scale = tk.Scale(self.win, from_=min_v, to=max_v, resolution=10**-digits,
-                            orient=tk.HORIZONTAL, variable=var, command=on_change,
-                            length=180, bg=bg, fg=fg, highlightbackground=bg,
-                            troughcolor='#16213e', activebackground='#0f3460')
-            val_label = tk.Label(self.win, textvariable=var, fg='#e94560', bg=bg,
-                                font=('Segoe UI', 9, 'bold'), width=4)
-            scale.grid(row=r, column=1, sticky='ew', padx=(3, 3), pady=2)
-            val_label.grid(row=r, column=2, sticky='w', padx=(0, 15))
-            return r + 1
-
-        def add_dropdown(key, label, options, r):
-            tk.Label(self.win, text=label, fg=fg, bg=bg,
-                     font=('Segoe UI', 9)).grid(row=r, column=0, sticky='w', padx=(15, 5))
-            var = tk.StringVar(value=self.cfg.get(key, options[0]))
-            dropdown = ttk.Combobox(self.win, textvariable=var, values=options,
-                                   state='readonly', width=14)
-            dropdown.grid(row=r, column=1, sticky='w', padx=5, pady=2)
-            def on_change(*args, k=key):
-                self.cfg[k] = var.get()
-                self.app.cfg[k] = var.get()
-            var.trace_add('write', on_change)
-            return r + 1
-
-        # ─── Title ───
-        tk.Label(self.win, text='♢ Hermes Cube', fg='#e94560', bg=bg,
-                 font=('Segoe UI', 14, 'bold')).grid(row=row, column=0, columnspan=3,
-                 pady=(15, 5))
-        row += 1
-        tk.Label(self.win, text='Настройки аватара', fg='#888', bg=bg,
-                 font=('Segoe UI', 9)).grid(row=row, column=0, columnspan=3)
-        row += 1
-
-        # ─── Separator ───
-        ttk.Separator(self.win, orient='horizontal').grid(row=row, column=0, columnspan=3,
-                                                          sticky='ew', padx=15, pady=8)
-        row += 1
-
-        # ─── Animation ───
-        row = add_label('Анимация', row)
-        row = add_slider('cube_scale', 'Размер куба', 0.08, 0.6, row)
-        row = add_slider('rotation_speed', 'Скорость вращения', 0.05, 1.0, row)
-        row = add_slider('pulse_rate', 'Частота пульсации', 0.3, 5.0, row)
-        row = add_slider('pulse_amplitude', 'Амплитуда пульсации', 0.0, 0.35, row)
-
-        # ─── Shape ───
-        add_label('Форма', row); row += 1
-        row = add_dropdown('shape_preset', 'Пресет формы', ['cube', 'sphere', 'torus', 'dna', 'metaball'], row)
-        row = add_slider('morph_progress', 'Морфинг (куб → форма)', 0.0, 1.0, row)
-
-        # ─── Particles ───
-        add_label('Частицы', row); row += 1
-        row = add_slider('particle_density', 'Плотность частиц', 6, 20, row, 0)
-        row = add_slider('cell_size', 'Размер частицы (px)', 2, 12, row, 0)
-
-        # ─── Style ───
-        add_label('Стиль', row); row += 1
-        row = add_dropdown('symbol', 'Форма частиц', ['square', 'circle', 'dot'], row)
-
-        # ─── On top ───
-        on_top_var = tk.BooleanVar(value=self.cfg.get('always_on_top', True))
-        cb = tk.Checkbutton(self.win, text='Поверх всех окон', variable=on_top_var,
-                          bg=bg, fg=fg, selectcolor='#16213e',
-                          activebackground=bg, activeforeground=fg,
-                          font=('Segoe UI', 9))
-        cb.grid(row=row, column=0, columnspan=3, sticky='w', padx=15, pady=8)
-        def on_top_changed():
-            self.cfg['always_on_top'] = on_top_var.get()
-            self.app.cfg['always_on_top'] = on_top_var.get()
-            self.app.root.attributes('-topmost', on_top_var.get())
-        cb.configure(command=on_top_changed)
-        row += 1
-
-        # ─── Buttons ───
-        btn_frame = tk.Frame(self.win, bg=bg)
-        btn_frame.grid(row=row, column=0, columnspan=3, pady=15)
-
-        def save():
-            self.cfg['cell_size'] = int(self.cfg['cell_size'])
-            self.cfg['particle_density'] = int(self.cfg['particle_density'])
-            self.cfg['rotation_speed'] = round(self.cfg['rotation_speed'], 2)
-            self.cfg['pulse_rate'] = round(self.cfg['pulse_rate'], 2)
-            self.cfg['pulse_amplitude'] = round(self.cfg['pulse_amplitude'], 2)
-            self.cfg['cube_scale'] = round(self.cfg['cube_scale'], 3)
-            for k, v in self.cfg.items():
-                self.app.cfg[k] = v
-            self.app.engine.recalc(self.app.cfg)
-            save_config(self.app.cfg)
-            self.win.destroy()
-
-        def cancel():
-            self.win.destroy()
-
-        for btn, cmd, col in [
-            ('💾 Сохранить', save, 0),
-            ('✕ Отмена', cancel, 1),
-        ]:
-            b = tk.Button(btn_frame, text=btn, command=cmd,
-                         bg='#0f3460', fg='#e0e0e0', activebackground='#e94560',
-                         activeforeground='#fff', relief=tk.FLAT, padx=12, pady=4,
-                         font=('Segoe UI', 9))
-            b.grid(row=0, column=col, padx=5)
-
-
-# ─── Entry Point ──────────────────────────────────────────────────────
 if __name__ == '__main__':
     app = CubeApp()
     app.run()
