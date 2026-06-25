@@ -74,6 +74,9 @@ from cube_agents import AgentManager
 from particle_agents import ParticleAgentManager
 from cube_agent_demo import run_demo
 
+# Char cube — symbols on cube faces
+from char_cube import SYMBOL_SETS
+
 # ---------------------------------------------------------------------------
 # Platform helpers
 # ---------------------------------------------------------------------------
@@ -147,6 +150,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     'always_on_top': True,
     'x': None,
     'y': None,
+    # Symbol / char mode
+    'char_mode': 'dots',          # 'dots' | 'symbols' | 'words' | 'glow'
+    'symbol_set': 'default',      # from SYMBOL_SETS keys
 }
 
 #: Predefined colour palette for agent sprites
@@ -745,6 +751,10 @@ class SettingsWindow:
 
         row = self._add_section(parent, 'Стиль', row)
         row = self._add_dropdown(parent, 'symbol', 'Форма частиц', ['square', 'circle', 'dot'], row)
+        row = self._add_dropdown(parent, 'char_mode', 'Режим символов',
+                                 ['dots', 'symbols', 'words', 'glow'], row)
+        row = self._add_dropdown(parent, 'symbol_set', 'Набор символов',
+                                 list(SYMBOL_SETS.keys()), row)
 
         row = self._add_topmost_checkbox(parent, row)
         self._add_buttons(parent, row)
@@ -1005,6 +1015,7 @@ class CubeApp:
         # Particle display items
         self.particle_items: List[int] = []
         self._current_symbol: str = 'square'
+        self._using_chars: bool = False  # toggle when char_mode != 'dots'
 
         # Drag state
         self._drag_data: Dict[str, int] = {'grab_x': 0, 'grab_y': 0, 'start_ox': 0, 'start_oy': 0}
@@ -1510,16 +1521,35 @@ class CubeApp:
             for item in self._trail_items:
                 self.canvas.coords(item, 0, 0, 0, 0)
 
-        # Rebuild particle items if symbol changed
-        if self._current_symbol != symbol:
+        char_mode: str = self.config.get('char_mode', 'dots')
+        symbol_set_name: str = self.config.get('symbol_set', 'default')
+        symbols_set: List[str] = SYMBOL_SETS.get(symbol_set_name, SYMBOL_SETS['default'])
+
+        # Rebuild particle items if symbol or char_mode changed
+        mode_changed: bool = (
+            self._current_symbol != symbol
+            or (char_mode != 'dots' and not self._using_chars)
+            or (char_mode == 'dots' and self._using_chars)
+        )
+        if mode_changed:
             for item in self.particle_items:
                 self.canvas.delete(item)
             self.particle_items.clear()
             self._current_symbol = symbol
+            self._using_chars = (char_mode != 'dots')
+
+        # Determine font size for symbols
+        char_font_size: int = max(4, cell_actual - 1)
 
         # Grow or shrink item pool
         while len(self.particle_items) < count:
-            if symbol in ('circle', 'dot'):
+            if self._using_chars:
+                item = self.canvas.create_text(
+                    0, 0, text='◆',
+                    fill='#000000', font=('Segoe UI', char_font_size, 'bold'),
+                    anchor='center',
+                )
+            elif symbol in ('circle', 'dot'):
                 item = self.canvas.create_oval(
                     0, 0, cell_actual, cell_actual,
                     fill='#000000', outline='', width=0,
@@ -1535,14 +1565,27 @@ class CubeApp:
 
         # Update positions & colours
         for i in range(count):
-            x1: int = int(px[i]) - half_actual
-            y1: int = int(py[i]) - half_actual
-            colour: str = f'#{int(r_p[i]):02x}{int(g_p[i]):02x}{int(b_p[i]):02x}'
-            self.canvas.coords(
-                self.particle_items[i],
-                x1, y1, x1 + cell_actual, y1 + cell_actual,
-            )
-            self.canvas.itemconfig(self.particle_items[i], fill=colour)
+            if self._using_chars:
+                char_idx: int = i % len(symbols_set)
+                ch: str = symbols_set[char_idx]
+                self.canvas.coords(
+                    self.particle_items[i],
+                    int(px[i]), int(py[i]),
+                )
+                colour = f'#{int(r_p[i]):02x}{int(g_p[i]):02x}{int(b_p[i]):02x}'
+                self.canvas.itemconfig(
+                    self.particle_items[i],
+                    text=ch, fill=colour,
+                )
+            else:
+                x1 = int(px[i]) - half_actual
+                y1 = int(py[i]) - half_actual
+                colour = f'#{int(r_p[i]):02x}{int(g_p[i]):02x}{int(b_p[i]):02x}'
+                self.canvas.coords(
+                    self.particle_items[i],
+                    x1, y1, x1 + cell_actual, y1 + cell_actual,
+                )
+                self.canvas.itemconfig(self.particle_items[i], fill=colour)
 
         # Startup hint overlay
         if self._show_hint:
