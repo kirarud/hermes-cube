@@ -614,21 +614,36 @@ class TrayIcon:
         self._setup()
 
     def _icon_from_png(self) -> Optional[int]:
-        """Load PNG icon and convert to Windows HICON."""
+        """Load tray icon PNG or generate on-the-fly, convert to HICON."""
         try:
-            tray_path: str = os.path.join(
-                os.environ.get('APPDATA', os.path.expanduser('~')),
-                'HermesCube', 'tray_icon.png',
-            )
-            if os.path.isfile(tray_path):
-                from PIL import Image
-                img = Image.open(tray_path).convert('RGBA')
-            else:
+            img = None
+            # Try Roaming
+            for base in [
+                os.environ.get('APPDATA', ''),
+                os.path.join(os.environ.get('LOCALAPPDATA', ''), 'HermesCube'),
+            ]:
+                p = os.path.join(base, 'tray_icon.png')
+                if os.path.isfile(p):
+                    from PIL import Image
+                    img = Image.open(p).convert('RGBA')
+                    break
+            if img is None:
+                # Try Local
+                p = os.path.join(
+                    os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
+                    'HermesCube', 'tray_icon.png',
+                )
+                if os.path.isfile(p):
+                    from PIL import Image
+                    img = Image.open(p).convert('RGBA')
+            if img is None:
+                # Generate icon from scratch
                 img = _create_tray_image()
             from PIL import ImageWin
             dib = ImageWin.Dib(img)
             return dib.to_hicon(64)
-        except Exception:
+        except Exception as e:
+            print(f"Icon load: {e}", flush=True)
             return None
 
     def _setup(self) -> None:
