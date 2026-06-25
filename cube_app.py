@@ -464,7 +464,18 @@ class CubeEngine:
 
 
 def _create_tray_image() -> Image.Image:
-    """Build a 64×64 RGBA icon: tiny RGB pixel cube + diamond symbol."""
+    """Load 64×64 tray icon from disk, or fallback to generated pixel icon."""
+    tray_path: str = os.path.join(
+        os.environ.get('APPDATA', os.path.expanduser('~')),
+        'HermesCube', 'tray_icon.png',
+    )
+    if os.path.isfile(tray_path):
+        try:
+            img: Image.Image = Image.open(tray_path).convert('RGBA')
+            return img.resize((64, 64), Image.LANCZOS)
+        except Exception:
+            pass
+    # Fallback: old pixel icon
     img: Image.Image = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     pixel_data: List[Tuple[int, int, int, int, int]] = [
