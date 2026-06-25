@@ -14,7 +14,8 @@ Architecture:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Dict, Deque, List, Optional, Tuple
 
 import json
 import math
@@ -28,6 +29,9 @@ from numpy.typing import NDArray
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageDraw
+
+# PixelGrid — framebuffer agent overlay
+from pixel_grid import PixelGrid, PixelGridWindow
 
 # ---------------------------------------------------------------------------
 # Platform helpers
@@ -493,6 +497,7 @@ def _setup_tray_icon(
     menu = pystray.Menu(
         pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
         pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
+        pystray.MenuItem('▤ PixelGrid', lambda i, m: app_ref._toggle_pixel_grid()),
         pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
@@ -878,6 +883,15 @@ class CubeApp:
         self._drag_handle: Optional[int] = None  # canvas polygon item ID
         self._handle_color: str = '#000000'  # true black ≠ TRANSPARENT_COLOR (#000001)
 
+        # PixelGrid animation state
+        self._pixel_anim_active: bool = False
+        self._pixel_anim_frame: int = 0
+
+        # Trails (light trails effect)
+        self._trail_enabled: bool = False
+        self._trail_history: Deque[dict] = deque(maxlen=12)
+        self._trail_items: List[int] = []
+
         # Tray reference
         self.tray_icon: Optional[Any] = None
 
@@ -893,6 +907,10 @@ class CubeApp:
         self.root.bind('s', lambda e: self.show_settings())
         self.root.bind('t', lambda e: self._toggle_draggable())
         self.root.bind('T', lambda e: self._toggle_draggable())
+        self.root.bind('r', lambda e: self._toggle_trails())
+        self.root.bind('R', lambda e: self._toggle_trails())
+        self.root.bind('g', lambda e: self._toggle_pixel_grid())
+        self.root.bind('G', lambda e: self._toggle_pixel_grid())
         # Settings window also opens via tray icon
 
         # ─── Context menu ───────────────────────────────────────────
@@ -905,6 +923,10 @@ class CubeApp:
         self.context_menu.add_command(
             label='↕ Переместить', command=self._toggle_draggable)
         self.context_menu.add_command(
+            label='🌠 Трейлы', command=self._toggle_trails)
+        self.context_menu.add_command(
+            label='▤ PixelGrid', command=self._toggle_pixel_grid)
+        self.context_menu.add_command(
             label='⚙ Настройки', command=self.show_settings)
         self.context_menu.add_separator()
         self.context_menu.add_command(
@@ -913,6 +935,14 @@ class CubeApp:
         # ─── Tray ───────────────────────────────────────────────────
         threading.Thread(target=lambda: setattr(
             self, 'tray_icon', _setup_tray_icon(self)), daemon=False).start()
+
+        # ─── PixelGrid — framebuffer agent overlay ──────────────────
+        sw_grid: int = self.root.winfo_screenwidth()
+        sh_grid: int = self.root.winfo_screenheight()
+        self.pixel_grid = PixelGrid(sw_grid, sh_grid)
+        self.pixel_win = PixelGridWindow(self.pixel_grid)
+        self.pixel_win._hide()  # start hidden
+        self._draw_test_pixel_ui()
 
         # ─── Start animation ────────────────────────────────────────
         self.root.after(100, self._start_anim)
@@ -1046,6 +1076,16 @@ class CubeApp:
         )
         self.root.after(1200, lambda: self.canvas.delete('mode_overlay'))
 
+    def _toggle_trails(self) -> None:
+        """Toggle particle trails on/off (R key)."""
+        self._trail_enabled = not self._trail_enabled
+        if not self._trail_enabled:
+            self._trail_history.clear()
+            for item in self._trail_items:
+                self.canvas.coords(item, 0, 0, 0, 0)
+        mode_text: str = '🌠 ТРЕЙЛЫ ВКЛ' if self._trail_enabled else 'ТРЕЙЛЫ ВЫКЛ'
+        self._show_mode_overlay(mode_text)
+
     def _show_context_menu(self, event: tk.Event) -> None:
         self.context_menu.tk_popup(
             self.root.winfo_rootx() + event.x,
@@ -1135,6 +1175,66 @@ class CubeApp:
 
         count: int = len(px)
 
+        # ── Trails — light trail effect ───────────────────────────────────
+        # Push current frame to history (before drawing trails)
+        if self._trail_enabled:
+            self._trail_history.append({
+                'px': px.copy(),
+                'py': py.copy(),
+                'r': r_p.copy(),
+                'g': g_p.copy(),
+                'b': b_p.copy(),
+                'cell': cell_actual,
+                'half': half_actual,
+                'count': count,
+            })
+
+        # Draw trail history (older = more faded)
+        trail_len: int = len(self._trail_history)
+        if trail_len > 1 and self._trail_enabled:
+            # Ensure trail item pool is large enough
+            trail_total_needed: int = (trail_len - 1) * count
+            while len(self._trail_items) < trail_total_needed:
+                item = self.canvas.create_rectangle(
+                    0, 0, 2, 2,
+                    fill='#000000', outline='', width=0,
+                )
+                self._trail_items.append(item)
+            while len(self._trail_items) > trail_total_needed:
+                self.canvas.delete(self._trail_items.pop())
+
+            idx: int = 0
+            for age in range(1, trail_len):
+                frame_data = self._trail_history[trail_len - 1 - age]
+                fade: float = 1.0 - (age / self._trail_history.maxlen)
+                if fade < 0.05:
+                    continue
+                trail_cell: int = max(1, int(frame_data['cell'] * fade))
+                trail_half: int = trail_cell // 2
+                for i in range(frame_data['count']):
+                    if idx >= len(self._trail_items):
+                        break
+                    tx = int(frame_data['px'][i]) - trail_half
+                    ty = int(frame_data['py'][i]) - trail_half
+                    tr = int(frame_data['r'][i] * fade)
+                    tg = int(frame_data['g'][i] * fade)
+                    tb = int(frame_data['b'][i] * fade)
+                    tcolour: str = f'#{tr:02x}{tg:02x}{tb:02x}'
+                    self.canvas.coords(
+                        self._trail_items[idx],
+                        tx, ty, tx + trail_cell, ty + trail_cell,
+                    )
+                    self.canvas.itemconfig(self._trail_items[idx], fill=tcolour)
+                    idx += 1
+            # Hide unused trail items
+            for j in range(idx, len(self._trail_items)):
+                self.canvas.coords(self._trail_items[j], 0, 0, 0, 0)
+        elif not self._trail_enabled:
+            # Hide all trails when disabled
+            self._trail_history.clear()
+            for item in self._trail_items:
+                self.canvas.coords(item, 0, 0, 0, 0)
+
         # Rebuild particle items if symbol changed
         if self._current_symbol != symbol:
             for item in self.particle_items:
@@ -1173,7 +1273,7 @@ class CubeApp:
         if self._show_hint:
             hint_id = self.canvas.create_text(
                 w // 2, h - 20,
-                text='S — настройки  |  H — скрыть  |  Трей — ПКМ по иконке',
+                text='S — настройки  |  R — трейлы  |  G — PixelGrid  |  H — скрыть',
                 fill=UI_ACCENT, font=('Segoe UI', 9), anchor='center',
             )
             self.root.after(
@@ -1190,6 +1290,153 @@ class CubeApp:
     def show_settings(self) -> None:
         """Open the settings panel."""
         SettingsWindow(self)
+
+    # ── PixelGrid ───────────────────────────────────────────────────
+
+    def _toggle_pixel_grid(self) -> None:
+        """Toggle the PixelGrid framebuffer overlay (G key / tray)."""
+        if not hasattr(self, 'pixel_win'):
+            return
+        if self.pixel_win.root.state() == 'withdrawn':
+            self.pixel_win.show()
+            self._pixel_anim_active = True
+            self._pixel_anim_frame = 0
+            self.root.after(100, self._pixel_anim_loop)
+        else:
+            self._pixel_anim_active = False
+            self.pixel_win._hide()
+            if hasattr(self, 'pixel_grid'):
+                self.pixel_grid.clear()
+
+    def _draw_test_pixel_ui(self) -> None:
+        """Draw a demo pixel-art panel on the PixelGrid."""
+        if not hasattr(self, 'pixel_grid'):
+            return
+        pg = self.pixel_grid
+        sw = pg.w
+        sh = pg.h
+
+        # ── Bottom-right control panel ──────────────────────────────
+        panel_w: int = 140
+        panel_h: int = 60
+        px: int = sw - panel_w - 20
+        py: int = sh - panel_h - 20
+
+        # Background
+        pg.paint_rect(px, py, px + panel_w, py + panel_h, (20, 20, 40))
+        # Border
+        pg.paint_outline(px, py, px + panel_w, py + panel_h, (60, 60, 120))
+
+        # "OK" button (left half)
+        btn_x: int = px + 6
+        btn_y: int = py + 6
+        btn_w: int = 58
+        btn_h: int = 24
+        pg.paint_rect(btn_x, btn_y, btn_x + btn_w, btn_y + btn_h, (40, 80, 40))
+        pg.paint_outline(btn_x, btn_y, btn_x + btn_w, btn_y + btn_h, (80, 160, 80))
+        # Text centered in button
+        text_x: int = btn_x + (btn_w - 5 * 6) // 2
+        text_y: int = btn_y + (btn_h - 7) // 2
+        pg.paint_text(text_x, text_y, 'OK', (180, 255, 180))
+        # Hit zone
+        pg.register_zone(btn_x, btn_y, btn_x + btn_w, btn_y + btn_h,
+                         on_click=lambda mx, my, action: self._pg_btn_ok())
+
+        # "X" button (right half)
+        btn2_x: int = px + panel_w - 6 - 58
+        btn2_y: int = py + 6
+        pg.paint_rect(btn2_x, btn2_y, btn2_x + btn_w, btn2_y + btn_h, (80, 30, 30))
+        pg.paint_outline(btn2_x, btn2_y, btn2_x + btn_w, btn2_y + btn_h, (160, 60, 60))
+        text2_x = btn2_x + (btn_w - 5 * 3) // 2
+        pg.paint_text(text2_x, text_y, '✕', (255, 160, 160))
+        pg.register_zone(btn2_x, btn2_y, btn2_x + btn_w, btn2_y + btn_h,
+                         on_click=lambda mx, my, action: self._pg_btn_close())
+
+        # ── Smiley face (left of panel) ──────────────────────────────
+        smiley_x: int = px - 40
+        smiley_y: int = py + 5
+        smiley: List[List[int]] = [
+            [0, 1, 0, 1, 0],
+            [0, 1, 0, 1, 0],
+            [0, 0, 0, 0, 0],
+            [1, 0, 0, 0, 1],
+            [0, 1, 1, 1, 0],
+        ]
+        pg.paint_sprite(smiley_x, smiley_y, smiley, [(0, 0, 1), (255, 200, 50)])
+
+        # ── Top-right status text ────────────────────────────────────
+        pg.paint_text(sw - 120, 10, 'PixelGrid', (100, 100, 180))
+        pg.paint_text(sw - 120, 20, 'G — скрыть', (80, 80, 140))
+
+    def _pixel_anim_loop(self) -> None:
+        """Animated pixel demo — доказывает что пиксели реально работают."""
+        if not self._pixel_anim_active:
+            return
+        if not hasattr(self, 'pixel_grid'):
+            return
+
+        import math
+        pg = self.pixel_grid
+        sw, sh = pg.w, pg.h
+        frame = self._pixel_anim_frame
+
+        # Clear and redraw static UI
+        pg.clear()
+        self._draw_test_pixel_ui()
+
+        # ── 1. Спиннер — вращающиеся точки в центре ──
+        cx = sw // 2
+        cy = sh // 2 - 40
+        angle = frame * 0.06
+        for i in range(14):
+            a = angle + i * (2.0 * math.pi / 14)
+            r = 35 + 12 * math.sin(frame * 0.1 + i * 0.9)
+            px = int(cx + r * math.cos(a))
+            py = int(cy + r * math.sin(a))
+            # Цвет меняется по кругу
+            ri = int(128 + 127 * math.sin(i * 0.5 + frame * 0.05))
+            gi = int(128 + 127 * math.sin(i * 0.7 + frame * 0.07))
+            bi = int(128 + 127 * math.sin(i * 0.3 + frame * 0.11))
+            pg.paint(px, py, ri, gi, bi)
+
+        # ── 2. Бегущая синусоида — волна пикселей ──
+        t = frame * 0.12
+        step = max(1, sw // 200)
+        for x in range(0, sw, step):
+            y = int(cy + 70 + 20 * math.sin(x * 0.04 + t))
+            brightness = int(100 + 155 * (0.5 + 0.5 * math.sin(x * 0.03 + t)))
+            pg.paint(x, y, brightness // 2, brightness, brightness)
+
+        # ── 3. Счётчик кадров (живые цифры) ──
+        counter = f'Frame: {frame}'
+        pg.paint_text(sw - 200, sh - 130, counter, (0, 255, 200))
+
+        # ── 4. Пульсирующая точка ──
+        bx = int(cx + 100 * math.cos(t * 0.7))
+        by = int(cy + 80 * math.sin(t * 0.5))
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                pg.paint(bx + dx, by + dy, 255, 80, 80)
+
+        # ── 5. Шкала загрузки ──
+        bar_x = cx - 80
+        bar_y = cy + 100
+        bar_w = 160
+        fill = int((frame % 100) * bar_w / 100)
+        pg.paint_rect(bar_x, bar_y, bar_x + bar_w, bar_y + 8, (30, 30, 60))
+        pg.paint_rect(bar_x, bar_y, bar_x + fill, bar_y + 8, (0, 200, 100))
+        pg.paint_outline(bar_x, bar_y, bar_x + bar_w, bar_y + 8, (80, 80, 120))
+
+        self._pixel_anim_frame += 1
+        self.root.after(66, self._pixel_anim_loop)
+
+    def _pg_btn_ok(self) -> None:
+        """Test PixelGrid OK button — flash a message."""
+        self._show_mode_overlay('PixelGrid OK!')
+
+    def _pg_btn_close(self) -> None:
+        """Test PixelGrid close button — hide overlay."""
+        self._toggle_pixel_grid()
 
     # ── Tray callbacks ─────────────────────────────────────────────────
 
@@ -1209,6 +1456,11 @@ class CubeApp:
                 self.tray_icon.stop()
             except Exception:
                 pass
+
+        try:
+            self.pixel_win.close()
+        except Exception:
+            pass
 
         self.root.destroy()
         os._exit(0)
