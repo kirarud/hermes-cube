@@ -14,6 +14,7 @@ Architecture:
 
 from __future__ import annotations
 
+import atexit
 from collections import deque
 from typing import Any, Dict, Deque, List, Optional, Tuple
 
@@ -497,6 +498,7 @@ def _setup_tray_icon(
     menu = pystray.Menu(
         pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
         pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
+        pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref._toggle_trails()),
         pystray.MenuItem('▤ PixelGrid', lambda i, m: app_ref._toggle_pixel_grid()),
         pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
         pystray.Menu.SEPARATOR,
@@ -507,7 +509,77 @@ def _setup_tray_icon(
         icon.run_detached()
     else:
         threading.Thread(target=icon.run, daemon=False).start()
+    # Store the icon's GUID for forced cleanup on crash
+    app_ref._tray_guid = 'HermesCube'
     return icon
+
+
+def _remove_tray_icon_force(guid: str = 'HermesCube') -> None:
+    """
+    Force-remove tray icon via Win32 Shell_NotifyIconW(NIM_DELETE).
+    Работает даже если pystray не успел почистить (SIGKILL/crash).
+    """
+    if sys.platform != 'win32':
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes, c_wchar, byref, create_unicode_buffer
+
+        shell32 = ctypes.windll.shell32
+        # GUID struct for NOTIFYICONDATAW
+        class GUID(ctypes.Structure):
+            _fields_ = [
+                ('Data1', wintypes.DWORD),
+                ('Data2', wintypes.WORD),
+                ('Data3', wintypes.WORD),
+                ('Data4', wintypes.BYTE * 8),
+            ]
+
+        class NOTIFYICONDATAW(ctypes.Structure):
+            _fields_ = [
+                ('cbSize', wintypes.DWORD),
+                ('hWnd', wintypes.HANDLE),
+                ('uID', wintypes.UINT),
+                ('uFlags', wintypes.UINT),
+                ('uCallbackMessage', wintypes.UINT),
+                ('hIcon', wintypes.HANDLE),
+                ('szTip', c_wchar * 128),
+                ('dwState', wintypes.DWORD),
+                ('dwStateMask', wintypes.DWORD),
+                ('szInfo', c_wchar * 256),
+                ('uVersion', wintypes.UINT),
+                ('szInfoTitle', c_wchar * 64),
+                ('dwInfoFlags', wintypes.DWORD),
+                ('guidItem', GUID),
+                ('hBalloonIcon', wintypes.HANDLE),
+            ]
+
+        nid = NOTIFYICONDATAW()
+        nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+        nid.uID = 1
+        nid.szTip = guid
+
+        # NIM_DELETE = 2
+        shell32.Shell_NotifyIconW(2, byref(nid))
+
+        # Also try with different uIDs (some icons use uID=0)
+        nid.uID = 0
+        shell32.Shell_NotifyIconW(2, byref(nid))
+    except Exception:
+        pass
+
+    # Fallback: notify explorer to refresh notification area
+    try:
+        ctypes.windll.user32.PostMessageW(
+            0xFFFF,  # HWND_BROADCAST
+            0x001A,  # WM_SETTINGCHANGE
+            0, 0,
+        )
+    except Exception:
+        pass
+
+
+atexit.register(_remove_tray_icon_force)
 
 
 # ---------------------------------------------------------------------------
