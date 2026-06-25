@@ -492,6 +492,7 @@ def _setup_tray_icon(
     image = _create_tray_image()
     menu = pystray.Menu(
         pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
+        pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
         pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
@@ -733,6 +734,69 @@ class SettingsWindow:
 
 
 # ---------------------------------------------------------------------------
+# Convex hull helpers for drag handle
+# ---------------------------------------------------------------------------
+
+
+def _convex_hull_2d(pts: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Monotone chain convex hull. Returns hull vertices in CCW order.
+
+    Args:
+        pts: (N, 2) array of 2D points.
+
+    Returns:
+        (M, 2) array of hull vertices (M >= 3), or pts if N < 3.
+    """
+    if len(pts) < 3:
+        return pts
+    # Sort by x then y
+    order = np.lexsort((pts[:, 1], pts[:, 0]))
+    pts = pts[order]
+
+    def cross(ox: float, oy: float, ax: float, ay: float,
+              bx: float, by: float) -> float:
+        return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox)
+
+    lower: list[tuple[float, float]] = []
+    for p in pts:
+        while len(lower) >= 2 and cross(
+                lower[-2][0], lower[-2][1],
+                lower[-1][0], lower[-1][1],
+                p[0], p[1]) <= 0:
+            lower.pop()
+        lower.append((float(p[0]), float(p[1])))
+
+    upper: list[tuple[float, float]] = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(
+                upper[-2][0], upper[-2][1],
+                upper[-1][0], upper[-1][1],
+                p[0], p[1]) <= 0:
+            upper.pop()
+        upper.append((float(p[0]), float(p[1])))
+
+    pts_out = lower[:-1] + upper[:-1]
+    return np.array(pts_out, dtype=np.float64)
+
+
+def _expand_hull(hull: NDArray[np.float64], pad: float = 24.0) -> NDArray[np.float64]:
+    """Expand convex hull vertices outward from centroid by *pad* pixels.
+
+    Args:
+        hull: (M, 2) convex hull vertices.
+        pad:  outward padding in pixels.
+
+    Returns:
+        Expanded (M, 2) hull.
+    """
+    centroid: NDArray[np.float64] = hull.mean(axis=0)
+    vecs: NDArray[np.float64] = hull - centroid
+    dists: NDArray[np.float64] = np.linalg.norm(vecs, axis=1, keepdims=True)
+    dists = np.where(dists == 0, 1, dists)
+    return hull + (vecs / dists) * pad
+
+
+# ---------------------------------------------------------------------------
 # CubeApp — main application controller
 # ---------------------------------------------------------------------------
 
@@ -783,6 +847,22 @@ class CubeApp:
             self.root, bg=TRANSPARENT_COLOR, highlightthickness=0,
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        # ─── Fullscreen overlay ─────────────────────────────────────
+        # Stretch to whole screen so cube never clips regardless of
+        # scale, morph, animation, or pulse.
+        # WS_EX_TRANSPARENT makes mouse clicks pass through to windows
+        # underneath — keyboard shortcuts still work (S, H, Q).
+        sw: int = self.root.winfo_screenwidth()
+        sh: int = self.root.winfo_screenheight()
+        self.root.geometry(f'{sw}x{sh}+0+0')
+        if sys.platform == 'win32' and _user32 is not None:
+            hwnd = ctypes.c_void_p(self.root.winfo_id())
+            GWL_EXSTYLE = -20
+            ex_style = _user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ex_style |= 0x00000020  # WS_EX_TRANSPARENT
+            _user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style)
+
         self.root.update()
 
         # Particle display items
@@ -790,22 +870,30 @@ class CubeApp:
         self._current_symbol: str = 'square'
 
         # Drag state
-        self._drag_data: Dict[str, int] = {'x': 0, 'y': 0}
+        self._drag_data: Dict[str, int] = {'grab_x': 0, 'grab_y': 0, 'start_ox': 0, 'start_oy': 0}
+        self.draggable: bool = False  # T/tray toggle: click-through vs draggable
+        self._dragging: bool = False
+        self._cube_ox: float = 0.0   # cube offset from center (x)
+        self._cube_oy: float = 0.0   # cube offset from center (y)
+        self._drag_handle: Optional[int] = None  # canvas polygon item ID
+        self._handle_color: str = '#000000'  # true black ≠ TRANSPARENT_COLOR (#000001)
 
         # Tray reference
         self.tray_icon: Optional[Any] = None
 
         # ─── Bindings ───────────────────────────────────────────────
-        self.canvas.bind('<Configure>', self._on_resize)
-        self.canvas.bind('<Button-1>', self._drag_start)
-        self.canvas.bind('<B1-Motion>', self._drag_move)
-        self.canvas.bind('<Button-3>', self._show_context_menu)
-        self.canvas.bind('<Double-Button-1>', lambda e: self.show_settings())
-
+        # WS_EX_TRANSPARENT blocks mouse events — toggle with T
+        self.root.bind('<Configure>', self._on_resize)
+        self.root.bind('<Button-1>', self._drag_start)
+        self.root.bind('<B1-Motion>', self._drag_move)
+        self.root.bind('<ButtonRelease-1>', self._drag_end)
         self.root.bind('<Escape>', lambda e: self._hide_window())
         self.root.bind('q', lambda e: self._hide_window())
         self.root.bind('h', lambda e: self._hide_window())
         self.root.bind('s', lambda e: self.show_settings())
+        self.root.bind('t', lambda e: self._toggle_draggable())
+        self.root.bind('T', lambda e: self._toggle_draggable())
+        # Settings window also opens via tray icon
 
         # ─── Context menu ───────────────────────────────────────────
         self.context_menu = tk.Menu(
@@ -814,6 +902,8 @@ class CubeApp:
         )
         self.context_menu.add_command(
             label='♢ Показать/Скрыть', command=self.toggle_window)
+        self.context_menu.add_command(
+            label='↕ Переместить', command=self._toggle_draggable)
         self.context_menu.add_command(
             label='⚙ Настройки', command=self.show_settings)
         self.context_menu.add_separator()
@@ -835,29 +925,30 @@ class CubeApp:
         """Expand window to fit all particles.
         Safe: uses direct scale calculation, no get_frame call,
         no nested update(), hard-capped at screen-safe size.
+        Includes pulse amplitude as a multiplier on scale.
         """
-        MAX_PX: int = 1280  # don't exceed user's screen width
+        MAX_PX: int = 1280
         try:
             scale_val: float = float(self.config.get('cube_scale', 0.27))
             pulse_amp: float = float(self.config.get('pulse_amplitude', 0.12))
             anim_amp: float = float(self.config.get('wave_amp', 0.12))
-            # Worst-case particle extent: cube radius (sqrt(3)~1.73) + jitter + anim
+            # Pulse makes scale oscillate up to (1 + pulse_amp) × base scale
+            pulse_peak: float = 1.0 + pulse_amp
             max_radius: float = 2.0 + anim_amp * 4.0
             w_cur: int = max(10, self.root.winfo_width())
             h_cur: int = max(10, self.root.winfo_height())
             base: float = float(min(w_cur, h_cur))
             if base < 10:
                 return
-            scale: float = base * scale_val / (1.0 + pulse_amp)
+            scale: float = base * scale_val / (1.0 + pulse_amp) * pulse_peak
             needed: float = 2.0 * (max_radius * scale + 60.0)
-            # Clamp to sane range
             if math.isnan(needed) or math.isinf(needed) or needed > MAX_PX:
                 needed = float(MAX_PX)
             needed_int: int = max(300, int(needed))
             if needed_int > max(w_cur, h_cur):
                 self.root.geometry(f'{needed_int}x{needed_int}')
         except Exception:
-            pass  # best-effort resize, never crash
+            pass
 
     def show_window(self) -> None:
         """Restore the overlay window."""
@@ -884,13 +975,76 @@ class CubeApp:
     # ── Drag & context menu ────────────────────────────────────────────
 
     def _drag_start(self, event: tk.Event) -> None:
-        self._drag_data['x'] = event.x_root - self.root.winfo_x()
-        self._drag_data['y'] = event.y_root - self.root.winfo_y()
+        if not self.draggable:
+            return
+        self._dragging = True
+        self._drag_data['grab_x'] = event.x_root
+        self._drag_data['grab_y'] = event.y_root
+        self._drag_data['start_ox'] = self._cube_ox
+        self._drag_data['start_oy'] = self._cube_oy
 
     def _drag_move(self, event: tk.Event) -> None:
-        new_x: int = event.x_root - self._drag_data['x']
-        new_y: int = event.y_root - self._drag_data['y']
-        self.root.geometry(f'+{new_x}+{new_y}')
+        if not self.draggable or not self._dragging:
+            return
+        dx: int = event.x_root - self._drag_data['grab_x']
+        dy: int = event.y_root - self._drag_data['grab_y']
+        self._cube_ox = self._drag_data['start_ox'] + dx
+        self._cube_oy = self._drag_data['start_oy'] + dy
+
+    def _drag_end(self, event: tk.Event) -> None:
+        self._dragging = False
+
+    def _toggle_draggable(self) -> None:
+        """Toggle between click-through and draggable mode.
+
+        In draggable mode:
+          - WS_EX_TRANSPARENT is removed (window catches clicks)
+          - A near-black drag-handle rect is shown behind the cube
+          - Cursor becomes fleur
+        In click-through mode:
+          - WS_EX_TRANSPARENT restored
+          - Drag-handle rect hidden
+          - Cursor reset
+        Background stays TRANSPARENT_COLOR at all times.
+        """
+        self.draggable = not self.draggable
+        if sys.platform == 'win32' and _user32 is not None:
+            hwnd = ctypes.c_void_p(self.root.winfo_id())
+            GWL_EXSTYLE = -20
+            ex_style = _user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if self.draggable:
+                ex_style &= ~0x00000020  # Remove WS_EX_TRANSPARENT
+                self.canvas.config(cursor='fleur')
+                # Create drag handle polygon (convex hull, updated every frame)
+                if self._drag_handle is None:
+                    self._drag_handle = self.canvas.create_polygon(
+                        0, 0, 0, 0,  # dummy coords, updated in _render_frame
+                        fill=self._handle_color, outline='',
+                        width=0, tags='drag_handle',
+                    )
+                self.canvas.tag_lower('drag_handle')  # behind particles
+                self.canvas.itemconfig('drag_handle', state='normal')
+            else:
+                ex_style |= 0x00000020   # Restore WS_EX_TRANSPARENT
+                self.canvas.config(cursor='')
+                if self._drag_handle is not None:
+                    self.canvas.itemconfig('drag_handle', state='hidden')
+            _user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style)
+        # Visual feedback
+        mode_text: str = '↕ РЕЖИМ ПЕРЕМЕЩЕНИЯ' if self.draggable else 'ПРОЗРАЧНЫЙ'
+        self._show_mode_overlay(mode_text)
+        # Update context menu label
+        label = '↕ Перемещение: вкл' if self.draggable else '↕ Переместить'
+        self.context_menu.entryconfig(1, label=label)
+
+    def _show_mode_overlay(self, text: str) -> None:
+        """Brief overlay text in top-left corner."""
+        overlay = self.canvas.create_text(
+            10, 10, anchor='nw', text=text,
+            fill='#ffffff', font=('Segoe UI', 14, 'bold'),
+            tags='mode_overlay',
+        )
+        self.root.after(1200, lambda: self.canvas.delete('mode_overlay'))
 
     def _show_context_menu(self, event: tk.Event) -> None:
         self.context_menu.tk_popup(
@@ -907,7 +1061,6 @@ class CubeApp:
         self.root.lift()
         self.root.lift()
         self.root.update()
-        self._auto_resize_window()
         self._render_frame()
 
     def _on_resize(self, event: tk.Event) -> None:
@@ -934,12 +1087,27 @@ class CubeApp:
         scale: float = (min(w, h) * self.config.get('cube_scale', 0.27)
                         / (1.0 + self.config.get('pulse_amplitude', 0.12))
                         * pulse)
-        cx_s: float = w / 2.0
-        cy_s: float = h / 2.0
+        cx_s: float = w / 2.0 + self._cube_ox
+        cy_s: float = h / 2.0 + self._cube_oy
 
         px: NDArray[np.float64] = pts3d[:, 0] * scale + cx_s
         py: NDArray[np.float64] = pts3d[:, 1] * scale + cy_s
         pz: NDArray[np.float64] = pts3d[:, 2]
+
+        # ── Convex hull drag handle (follows cube shape in real-time) ──
+        if self._drag_handle is not None and self.draggable and len(px) >= 3:
+            # Stack projected (x, y) and compute convex hull with padding
+            xy: NDArray[np.float64] = np.column_stack((px, py))
+            hull: NDArray[np.float64] = _convex_hull_2d(xy)
+            if len(hull) >= 3:
+                hull = _expand_hull(hull, pad=24.0)
+                # Flatten to [x1, y1, x2, y2, ...] for canvas polygon coords
+                flat_coords: list[float] = hull.ravel().tolist()
+                self.canvas.coords(self._drag_handle, *flat_coords)
+                self.canvas.tag_lower('drag_handle')
+        elif self._drag_handle is not None:
+            # Keep handle hidden / zero-area when not in drag mode
+            self.canvas.coords(self._drag_handle, 0, 0, 0, 0)
 
         # Depth sort (painter's algorithm)
         order: NDArray[np.int64] = np.argsort(pz)
@@ -1005,7 +1173,7 @@ class CubeApp:
         if self._show_hint:
             hint_id = self.canvas.create_text(
                 w // 2, h - 20,
-                text='Нажми S — настройки  |  H — скрыть  |  Двойной клик — меню',
+                text='S — настройки  |  H — скрыть  |  Трей — ПКМ по иконке',
                 fill=UI_ACCENT, font=('Segoe UI', 9), anchor='center',
             )
             self.root.after(
