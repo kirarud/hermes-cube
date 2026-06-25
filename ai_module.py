@@ -15,6 +15,7 @@ ai_module.py — AI-ядро Hermes Cube.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
+import colorsys
 import json
 import threading
 import tkinter as tk
@@ -40,24 +41,54 @@ AI_MOODS: Dict[str, Dict[str, float]] = {
 }
 
 
-def ai_chat(message: str, timeout: int = 15) -> str:
-    """Send a message to LM Studio and return the response text."""
+def ai_chat(
+    message: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    timeout: int = 15,
+) -> str:
+    """Send a message to LM Studio and return raw response text.
+
+    The system prompt instructs the model to reply with a JSON object:
+       {"mood": "happy|sad|thinking|speaking|idle",
+        "text": "...",
+        "color_hue": 0.0-1.0}
+
+    history: list of {"role": "user"|"assistant", "text": ...} to include as
+             conversation context (last 10 messages kept).
+    """
+    # Build message list
+    messages: List[Dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "Ты — живой аватар по имени Hermes Cube. "
+                "Твой дом — сфера из частиц. "
+                "Отвечай кратко, эмоционально, не больше 2-3 предложений. "
+                "Ты чувствуешь пульсацию, вращение, цвета вокруг себя.\n\n"
+                "ВСЕГДА отвечай ТОЛЬКО валидным JSON-объектом в ОДНУ строку "
+                "без пояснений и markdown, строго в формате:\n"
+                '{"mood": "happy|sad|thinking|speaking|idle", '
+                '"text": "...", '
+                '"color_hue": 0.0-1.0}\n'
+                "Поле mood отражает твоё настроение. "
+                "Поле text — твой ответ пользователю. "
+                "Поле color_hue — оттенок цвета (0.0-1.0), "
+                "соответствующий твоему настроению."
+            ),
+        },
+    ]
+    if history:
+        # Take last 10 messages
+        for h in history[-10:]:
+            role: str = "assistant" if h["role"] == "ai" else h["role"]
+            messages.append({"role": role, "content": h["text"]})
+    messages.append({"role": "user", "content": message})
+
     data: bytes = json.dumps({
         "model": AI_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Ты — живой аватар по имени Hermes Cube. "
-                    "Твой дом — сфера из частиц. "
-                    "Отвечай кратко, эмоционально, не больше 2-3 предложений. "
-                    "Ты чувствуешь пульсацию, вращение, цвета вокруг себя."
-                ),
-            },
-            {"role": "user", "content": message},
-        ],
+        "messages": messages,
         "temperature": 0.8,
-        "max_tokens": 120,
+        "max_tokens": 180,
         "stream": False,
     }).encode()
     try:
@@ -70,11 +101,11 @@ def ai_chat(message: str, timeout: int = 15) -> str:
             result: Dict[str, Any] = json.loads(resp.read())
             return result["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        return f"[Ошибка: {e}]"
+        return json.dumps({"mood": "idle", "text": f"[Ошибка: {e}]", "color_hue": 0.0})
 
 
 def analyze_mood(text: str) -> str:
-    """Detect mood from AI response text via keywords."""
+    """Detect mood from AI response text via keywords (fallback)."""
     t: str = text.lower()
     if any(w in t for w in ['груст', 'печал', 'устал', 'тоск', 'один']):
         return 'sad'
@@ -83,6 +114,62 @@ def analyze_mood(text: str) -> str:
     if any(w in t for w in ['дума', 'размыш', 'представ', 'может']):
         return 'thinking'
     return 'speaking'
+
+
+def parse_ai_response(raw: str) -> Dict[str, Any]:
+    """Parse JSON response from LM Studio into structured dict.
+
+    Expected format:
+        {"mood": "happy|sad|thinking|speaking|idle",
+         "text": "...",
+         "color_hue": 0.0-1.0}
+
+    If JSON parsing fails, falls back to keyword-based mood detection
+    and returns raw text with hue=0.0.
+    """
+    # Try to extract JSON from the response (handle model wrapping it in backticks)
+    cleaned: str = raw.strip()
+    if cleaned.startswith('```'):
+        # Remove markdown code fences
+        cleaned = cleaned.strip('` \n')
+        if cleaned.startswith('json'):
+            cleaned = cleaned[4:].strip()
+    try:
+        parsed: Dict[str, Any] = json.loads(cleaned)
+        mood: str = str(parsed.get('mood', 'speaking'))
+        text: str = str(parsed.get('text', raw))
+        color_hue: float = float(parsed.get('color_hue', 0.0))
+        # Validate mood
+        if mood not in ('happy', 'sad', 'thinking', 'speaking', 'idle'):
+            mood = analyze_mood(text)
+        # Clamp color_hue
+        color_hue = max(0.0, min(1.0, color_hue))
+        return {'mood': mood, 'text': text, 'color_hue': color_hue}
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+    # Fallback: keyword-based mood + raw text
+    mood = analyze_mood(raw)
+    return {'mood': mood, 'text': raw, 'color_hue': AI_MOODS.get(mood, AI_MOODS['idle'])['color_shift']}
+
+
+def apply_hsv_shift(
+    r: float, g: float, b: float,
+    hue_shift: float,
+) -> Tuple[float, float, float]:
+    """Apply a hue rotation to an RGB colour using HSV colour space.
+
+    hue_shift: rotation amount in normalized 0.0-1.0 range (maps to 0-360°).
+    0.0 = no change, 0.5 = 180° rotation, etc.
+    Returns shifted (r, g, b) each in 0-255 range.
+    """
+    h: float
+    s: float
+    v: float
+    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    h = (h + hue_shift) % 1.0
+    r2, g2, b2 = colorsys.hsv_to_rgb(h, s, v)
+    return (r2 * 255.0, g2 * 255.0, b2 * 255.0)
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +398,7 @@ class AiCore:
         self.root: tk.Tk = root
         self.mood: str = 'idle'
         self.last_response: str = ''
+        self.color_hue: float = 0.0
         self.history: List[Dict[str, str]] = []  # [{"role": ..., "text": ...}]
         self._thinking: bool = False
 

@@ -1017,6 +1017,7 @@ class CubeApp:
         # AI-ядро
         self.ai: AiCore = AiCore(self.root)
         self._ai_color_shift: float = 0.0
+        self._last_mood: str = 'idle'
 
         # Trails
         self._trail_enabled: bool = False
@@ -1221,6 +1222,16 @@ class CubeApp:
         mode_text: str = '🌠 ТРЕЙЛЫ ВКЛ' if self._trail_enabled else 'ТРЕЙЛЫ ВЫКЛ'
         self._show_mode_overlay(mode_text)
 
+    def set_trails(self, enabled: bool) -> None:
+        """Enable or disable particle trails programmatically (for AiCore)."""
+        if enabled == self._trail_enabled:
+            return
+        self._trail_enabled = enabled
+        if not enabled:
+            self._trail_history.clear()
+            for item in self._trail_items:
+                self.canvas.coords(item, 0, 0, 0, 0)
+
     def _show_context_menu(self, event: tk.Event) -> None:
         self.context_menu.tk_popup(
             self.root.winfo_rootx() + event.x,
@@ -1264,6 +1275,20 @@ class CubeApp:
             self.config['rotation_speed'] = mood_params['speed']
         self._ai_color_shift = self.ai.get_color_shift()
 
+        # ── Mood change overlay ────────────────────────────────────────
+        current_mood: str = self.ai.mood
+        if current_mood != self._last_mood:
+            self._last_mood = current_mood
+            mood_labels: Dict[str, str] = {
+                'idle':     '😐 Бездействие',
+                'thinking': '🤔 Размышляет',
+                'speaking': '💬 Говорит',
+                'happy':    '😊 Радостный',
+                'sad':      '😢 Грустный',
+            }
+            self._show_mode_overlay(
+                mood_labels.get(current_mood, current_mood))
+
         pts3d, pulse = self.engine.get_frame(elapsed, self.config)
 
         # Project 3D → 2D
@@ -1305,20 +1330,56 @@ class CubeApp:
         g_p = np.clip(self.engine.g0[order] * depth_factor, 0, 255)
         b_p = np.clip(self.engine.b0[order] * depth_factor, 0, 255)
 
-        # ── AI mood color shift ───────────────────────────────────────
+        # ── AI mood HSV color shift (fully vectorized numpy) ─────────
         shift: float = self._ai_color_shift
         if shift > 0.01:
-            if shift < 0.3:  # warm shift
-                r_p = r_p * (1.0 - shift * 0.5) + g_p * shift * 0.5
-                g_p = g_p * (1.0 - shift * 0.3) + b_p * shift * 0.3
-                b_p = b_p * (1.0 - shift * 0.4)
-            else:  # cool shift
-                r_p = r_p * (1.0 - shift * 0.3)
-                g_p = g_p * (1.0 - shift * 0.2) + r_p * shift * 0.3
-                b_p = b_p * (1.0 - shift * 0.5) + g_p * shift * 0.7
-            r_p = np.clip(r_p, 0, 255)
-            g_p = np.clip(g_p, 0, 255)
-            b_p = np.clip(b_p, 0, 255)
+            # Normalize to [0, 1]
+            r = r_p / 255.0
+            g = g_p / 255.0
+            b = b_p / 255.0
+
+            # RGB → HSV (vectorized)
+            mx = np.maximum(np.maximum(r, g), b)
+            mn = np.minimum(np.minimum(r, g), b)
+            delta = mx - mn
+
+            h = np.zeros_like(r)
+            mask = delta > 1e-6
+            rm = mask & (mx == r)
+            gm = mask & (mx == g)
+            bm = mask & (mx == b)
+            h[rm] = ((g[rm] - b[rm]) / delta[rm]) % 6.0
+            h[gm] = ((b[gm] - r[gm]) / delta[gm]) + 2.0
+            h[bm] = ((r[bm] - g[bm]) / delta[bm]) + 4.0
+            h = h / 6.0
+
+            s = np.zeros_like(r)
+            s[mask] = delta[mask] / mx[mask]
+            v = mx
+
+            # Apply hue shift (wrap around)
+            h = (h + shift) % 1.0
+
+            # HSV → RGB (vectorized)
+            h6 = h * 6.0
+            hi = np.floor(h6).astype(np.int32)
+            f = h6 - hi.astype(np.float64)
+            p = v * (1.0 - s)
+            q = v * (1.0 - s * f)
+            t = v * (1.0 - s * (1.0 - f))
+
+            r_p = np.clip(np.select(
+                [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
+                [v, q, p, p, t, v]
+            ) * 255.0, 0, 255)
+            g_p = np.clip(np.select(
+                [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
+                [t, v, v, q, p, p]
+            ) * 255.0, 0, 255)
+            b_p = np.clip(np.select(
+                [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
+                [p, p, t, v, v, q]
+            ) * 255.0, 0, 255)
 
         cell: int = max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE)))
         half: int = cell // 2
