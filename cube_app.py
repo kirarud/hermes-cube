@@ -69,6 +69,11 @@ from pixel_grid import PixelGrid, PixelGridWindow
 # AI-ядро (чат, настроения, буквы, ввод)
 from ai_module import AiCore, AI_MOODS
 
+# CubeAgents — pixel UI agents
+from cube_agents import AgentManager
+from particle_agents import ParticleAgentManager
+from cube_agent_demo import run_demo
+
 # ---------------------------------------------------------------------------
 # Platform helpers
 # ---------------------------------------------------------------------------
@@ -1045,6 +1050,8 @@ class CubeApp:
         self.root.bind('R', lambda e: self._toggle_trails())
         self.root.bind('g', lambda e: self._toggle_pixel_grid())
         self.root.bind('G', lambda e: self._toggle_pixel_grid())
+        self.root.bind('a', lambda e: self._spawn_agent())
+        self.root.bind('A', lambda e: self._spawn_agent())
         # Settings window also opens via tray icon
 
         # ─── Context menu ───────────────────────────────────────────
@@ -1063,6 +1070,8 @@ class CubeApp:
         self.context_menu.add_command(
             label='▤ PixelGrid', command=self._toggle_pixel_grid)
         self.context_menu.add_command(
+            label='👾 Агент (A)', command=self._spawn_agent)
+        self.context_menu.add_command(
             label='⚙ Настройки', command=self.show_settings)
         self.context_menu.add_separator()
         self.context_menu.add_command(
@@ -1079,6 +1088,10 @@ class CubeApp:
         self.pixel_win = PixelGridWindow(self.pixel_grid)
         self.pixel_win._hide()  # start hidden
         self._draw_test_pixel_ui()
+
+        # ─── Agent managers ───────────────────────────────────────────
+        self.agent_mgr: AgentManager = AgentManager(self.pixel_grid)
+        self.particle_mgr: ParticleAgentManager = ParticleAgentManager(self.pixel_grid)
 
         # ─── Start animation ────────────────────────────────────────
         self.root.after(100, self._start_anim)
@@ -1231,6 +1244,49 @@ class CubeApp:
             self._trail_history.clear()
             for item in self._trail_items:
                 self.canvas.coords(item, 0, 0, 0, 0)
+
+    # ── Agent methods ──────────────────────────────────────────────────
+
+    def _spawn_agent(self) -> None:
+        """Spawn a particle-agent from a random cube particle (A key)."""
+        if not hasattr(self, 'particle_mgr'):
+            return
+        t: float = self.root.tk.call('clock', 'milliseconds') / 1000.0
+        pts3d, pulse = self.engine.get_frame(t, self.config)
+        w: int = max(10, self.canvas.winfo_width())
+        h: int = max(10, self.canvas.winfo_height())
+        scale: float = (min(w, h) * self.config.get('cube_scale', 0.27)
+                        / 1.12 * pulse)
+        cx_s: float = w / 2.0 + self._cube_ox
+        cy_s: float = h / 2.0 + self._cube_oy
+        px: NDArray[np.float64] = pts3d[:, 0] * scale + cx_s
+        py: NDArray[np.float64] = pts3d[:, 1] * scale + cy_s
+
+        if len(px) < 1:
+            return
+        idx: int = int(np.random.rand() * len(px))
+        r: int = int(self.engine.r0[idx])
+        g: int = int(self.engine.g0[idx])
+        b: int = int(self.engine.b0[idx])
+
+        import random as _rnd
+        tx: int = _rnd.randint(50, max(51, w - 50))
+        ty: int = _rnd.randint(50, max(51, h - 50))
+        self.particle_mgr.spawn(
+            idx, float(px[idx]), float(py[idx]),
+            (r, g, b), 'cursor', float(tx), float(ty),
+        )
+
+    def _render_pixel_agents(self) -> None:
+        """Periodic render loop for pixel agents (called from after-loop)."""
+        if not self._pixel_anim_active:
+            return
+        if hasattr(self, 'pixel_win') and self.pixel_win.running:
+            self.agent_mgr.render_all()
+            self.particle_mgr.update_all()
+            self.particle_mgr.render_all()
+            self.pixel_grid._modified = True
+        self.root.after(66, self._render_pixel_agents)
 
     def _show_context_menu(self, event: tk.Event) -> None:
         self.context_menu.tk_popup(
@@ -1655,6 +1711,12 @@ class CubeApp:
         pg.paint_rect(bar_x, bar_y, bar_x + bar_w, bar_y + 8, (30, 30, 60))
         pg.paint_rect(bar_x, bar_y, bar_x + fill, bar_y + 8, (0, 200, 100))
         pg.paint_outline(bar_x, bar_y, bar_x + bar_w, bar_y + 8, (80, 80, 120))
+
+        # ── 6. Agent rendering ────────────────────────────────────────
+        if hasattr(self, 'agent_mgr') and hasattr(self, 'particle_mgr'):
+            self.agent_mgr.render_all()
+            self.particle_mgr.update_all()
+            self.particle_mgr.render_all()
 
         self._pixel_anim_frame += 1
         self.root.after(66, self._pixel_anim_loop)
