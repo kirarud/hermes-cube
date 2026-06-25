@@ -34,6 +34,9 @@ from PIL import Image, ImageDraw
 # PixelGrid — framebuffer agent overlay
 from pixel_grid import PixelGrid, PixelGridWindow
 
+# AI-ядро (чат, настроения, буквы, ввод)
+from ai_module import AiCore, AI_MOODS
+
 # ---------------------------------------------------------------------------
 # Platform helpers
 # ---------------------------------------------------------------------------
@@ -970,7 +973,11 @@ class CubeApp:
         self._pixel_anim_active: bool = False
         self._pixel_anim_frame: int = 0
 
-        # Trails (light trails effect)
+        # AI-ядро
+        self.ai: AiCore = AiCore(self.root)
+        self._ai_color_shift: float = 0.0
+
+        # Trails
         self._trail_enabled: bool = False
         self._trail_history: Deque[dict] = deque(maxlen=12)
         self._trail_items: List[int] = []
@@ -988,6 +995,8 @@ class CubeApp:
         self.root.bind('q', lambda e: self._hide_window())
         self.root.bind('h', lambda e: self._hide_window())
         self.root.bind('s', lambda e: self.show_settings())
+        self.root.bind('c', lambda e: self.ai.toggle_input())
+        self.root.bind('C', lambda e: self.ai.toggle_input())
         self.root.bind('t', lambda e: self._toggle_draggable())
         self.root.bind('T', lambda e: self._toggle_draggable())
         self.root.bind('r', lambda e: self._toggle_trails())
@@ -1005,6 +1014,8 @@ class CubeApp:
             label='♢ Показать/Скрыть', command=self.toggle_window)
         self.context_menu.add_command(
             label='↕ Переместить', command=self._toggle_draggable)
+        self.context_menu.add_command(
+            label='💬 Ввод (C)', command=self.ai.toggle_input)
         self.context_menu.add_command(
             label='🌠 Трейлы', command=self._toggle_trails)
         self.context_menu.add_command(
@@ -1204,6 +1215,14 @@ class CubeApp:
             self.root.after(FRAME_MS, self._render_frame)
             return
 
+        # ── AI mood override ─────────────────────────────────────────
+        mood_params: Dict[str, float] = self.ai.get_mood_override()
+        if mood_params:
+            self.config['pulse_rate'] = mood_params['pulse_rate']
+            self.config['pulse_amplitude'] = mood_params['pulse_amp']
+            self.config['rotation_speed'] = mood_params['speed']
+        self._ai_color_shift = self.ai.get_color_shift()
+
         pts3d, pulse = self.engine.get_frame(elapsed, self.config)
 
         # Project 3D → 2D
@@ -1244,6 +1263,21 @@ class CubeApp:
         r_p = np.clip(self.engine.r0[order] * depth_factor, 0, 255)
         g_p = np.clip(self.engine.g0[order] * depth_factor, 0, 255)
         b_p = np.clip(self.engine.b0[order] * depth_factor, 0, 255)
+
+        # ── AI mood color shift ───────────────────────────────────────
+        shift: float = self._ai_color_shift
+        if shift > 0.01:
+            if shift < 0.3:  # warm shift
+                r_p = r_p * (1.0 - shift * 0.5) + g_p * shift * 0.5
+                g_p = g_p * (1.0 - shift * 0.3) + b_p * shift * 0.3
+                b_p = b_p * (1.0 - shift * 0.4)
+            else:  # cool shift
+                r_p = r_p * (1.0 - shift * 0.3)
+                g_p = g_p * (1.0 - shift * 0.2) + r_p * shift * 0.3
+                b_p = b_p * (1.0 - shift * 0.5) + g_p * shift * 0.7
+            r_p = np.clip(r_p, 0, 255)
+            g_p = np.clip(g_p, 0, 255)
+            b_p = np.clip(b_p, 0, 255)
 
         cell: int = max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE)))
         half: int = cell // 2
@@ -1356,7 +1390,7 @@ class CubeApp:
         if self._show_hint:
             hint_id = self.canvas.create_text(
                 w // 2, h - 20,
-                text='S — настройки  |  R — трейлы  |  G — PixelGrid  |  H — скрыть',
+                text='C — ввод  |  S — настройки  |  R — трейлы  |  G — PixelGrid  |  H — скрыть',
                 fill=UI_ACCENT, font=('Segoe UI', 9), anchor='center',
             )
             self.root.after(
@@ -1364,6 +1398,16 @@ class CubeApp:
                 lambda: self.canvas.delete(hint_id) if self.canvas.winfo_exists() else None,
             )
             self._show_hint = False
+
+        # ── AI update — spawn response letters from cube center ─────────
+        self.ai.update(FRAME_MS / 1000.0)
+        if (self.ai.last_response
+                and not self.ai._thinking
+                and len(self.ai.text_overlay.particles) == 0):
+            # Spawn letters at cube center (screen position)
+            response_text: str = self.ai.last_response
+            self.ai.spawn_response(response_text, int(cx_s), int(cy_s))
+            self.ai.last_response = ''  # clear to avoid re-spawn
 
         self.frame_count += 1
         self.root.after(FRAME_MS, self._render_frame)
@@ -1542,6 +1586,11 @@ class CubeApp:
 
         try:
             self.pixel_win.close()
+        except Exception:
+            pass
+
+        try:
+            self.ai.close()
         except Exception:
             pass
 
