@@ -507,25 +507,30 @@ def _setup_tray_icon(
     Returns the pystray Icon instance, or None if pystray is unavailable.
     """
     if pystray is None:
+        print("pystray not available", flush=True)
         return None
-    image = _create_tray_image()
-    menu = pystray.Menu(
-        pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
-        pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
-        pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref._toggle_trails()),
-        pystray.MenuItem('▤ PixelGrid', lambda i, m: app_ref._toggle_pixel_grid()),
-        pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
-    )
-    icon = pystray.Icon('HermesCube', image, '♢ Hermes Cube', menu)
-    if hasattr(icon, 'run_detached'):
-        icon.run_detached()
-    else:
-        threading.Thread(target=icon.run, daemon=False).start()
-    # Store the icon's GUID for forced cleanup on crash
-    app_ref._tray_guid = 'HermesCube'
-    return icon
+    try:
+        image = _create_tray_image()
+        menu = pystray.Menu(
+            pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
+            pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
+            pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref._toggle_trails()),
+            pystray.MenuItem('▤ PixelGrid', lambda i, m: app_ref._toggle_pixel_grid()),
+            pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
+        )
+        icon = pystray.Icon('HermesCube', image, '♢ Hermes Cube', menu)
+        if hasattr(icon, 'run_detached'):
+            icon.run_detached()
+        else:
+            threading.Thread(target=icon.run, daemon=False).start()
+        # Store the icon's GUID for forced cleanup on crash
+        app_ref._tray_guid = 'HermesCube'
+        return icon
+    except Exception as e:
+        print(f"Tray icon failed: {e}", flush=True)
+        return None
 
 
 def _remove_tray_icon_force(guid: str = 'HermesCube') -> None:
@@ -592,7 +597,98 @@ def _remove_tray_icon_force(guid: str = 'HermesCube') -> None:
     except Exception:
         pass
 
+# ---------------------------------------------------------------------------
+# Tray icon — Win32 API (no pystray dependency)
+# ---------------------------------------------------------------------------
 
+class TrayIcon:
+    """
+    System tray icon via Win32 Shell_NotifyIconW.
+    Просто иконка — меню вызывается через ПКМ по окну куба или клавиши.
+    """
+
+    def __init__(self, app_ref: Any) -> None:
+        self.app = app_ref
+        self._hicon: Optional[int] = None
+        self._nid: Any = None
+        self._setup()
+
+    def _icon_from_png(self) -> Optional[int]:
+        """Load PNG icon and convert to Windows HICON."""
+        try:
+            tray_path: str = os.path.join(
+                os.environ.get('APPDATA', os.path.expanduser('~')),
+                'HermesCube', 'tray_icon.png',
+            )
+            if os.path.isfile(tray_path):
+                from PIL import Image
+                img = Image.open(tray_path).convert('RGBA')
+            else:
+                img = _create_tray_image()
+            from PIL import ImageWin
+            dib = ImageWin.Dib(img)
+            return dib.to_hicon(64)
+        except Exception:
+            return None
+
+    def _setup(self) -> None:
+        """Register tray icon linked to Tkinter root window."""
+        if sys.platform != 'win32':
+            return
+        try:
+            hicon = self._icon_from_png()
+            if hicon is None:
+                return
+            self._hicon = hicon
+
+            hwnd = ctypes.c_void_p(self.app.root.winfo_id())
+
+            class NOTIFYICONDATAW(ctypes.Structure):
+                _fields_ = [
+                    ('cbSize', ctypes.c_uint32),
+                    ('hWnd', ctypes.c_void_p),
+                    ('uID', ctypes.c_uint32),
+                    ('uFlags', ctypes.c_uint32),
+                    ('uCallbackMessage', ctypes.c_uint32),
+                    ('hIcon', ctypes.c_void_p),
+                    ('szTip', ctypes.c_wchar * 128),
+                    ('dwState', ctypes.c_uint32),
+                    ('dwStateMask', ctypes.c_uint32),
+                    ('szInfo', ctypes.c_wchar * 256),
+                    ('uVersion', ctypes.c_uint32),
+                    ('szInfoTitle', ctypes.c_wchar * 64),
+                    ('dwInfoFlags', ctypes.c_uint32),
+                    ('guidItem', ctypes.c_byte * 16),
+                    ('hBalloonIcon', ctypes.c_void_p),
+                ]
+
+            nid = NOTIFYICONDATAW()
+            nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+            nid.hWnd = hwnd
+            nid.uID = 1
+            nid.uFlags = 0x01 | 0x02 | 0x04  # NIF_MESSAGE | NIF_ICON | NIF_TIP
+            nid.uCallbackMessage = 0x5000 + 42
+            nid.hIcon = hicon
+            nid.szTip = '♢ Hermes Cube'
+            self._nid = nid
+
+            # NIM_ADD = 0
+            ctypes.windll.shell32.Shell_NotifyIconW(0, ctypes.byref(nid))
+            self.app._tray_icon_nid = nid
+        except Exception as e:
+            print(f"Tray: {e}", flush=True)
+
+    def remove(self) -> None:
+        """Remove tray icon."""
+        if self._nid is not None:
+            try:
+                # NIM_DELETE = 2
+                ctypes.windll.shell32.Shell_NotifyIconW(2, ctypes.byref(self._nid))
+            except Exception:
+                pass
+
+
+#: Register forced cleanup on abnormal exit
 atexit.register(_remove_tray_icon_force)
 
 
@@ -983,7 +1079,7 @@ class CubeApp:
         self._trail_items: List[int] = []
 
         # Tray reference
-        self.tray_icon: Optional[Any] = None
+        self._tray_icon_win32: Any = None
 
         # ─── Bindings ───────────────────────────────────────────────
         # WS_EX_TRANSPARENT blocks mouse events — toggle with T
@@ -1027,8 +1123,10 @@ class CubeApp:
             label='✕ Выход', command=self.quit_app)
 
         # ─── Tray ───────────────────────────────────────────────────
-        threading.Thread(target=lambda: setattr(
-            self, 'tray_icon', _setup_tray_icon(self)), daemon=False).start()
+        try:
+            self._tray_icon_win32 = TrayIcon(self)
+        except Exception:
+            pass
 
         # ─── PixelGrid — framebuffer agent overlay ──────────────────
         sw_grid: int = self.root.winfo_screenwidth()
@@ -1578,9 +1676,9 @@ class CubeApp:
         self.anim_running = False
         self.running = False
 
-        if self.tray_icon is not None:
+        if hasattr(self, '_tray_icon_win32') and self._tray_icon_win32 is not None:
             try:
-                self.tray_icon.stop()
+                self._tray_icon_win32.remove()
             except Exception:
                 pass
 
