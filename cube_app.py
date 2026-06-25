@@ -85,8 +85,8 @@ FRAME_MS: int = 42
 HINT_DURATION_MS: int = 5000
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    'window_width': 400,
-    'window_height': 400,
+    'window_width': 600,
+    'window_height': 600,
     'rotation_speed': 0.28,
     'pulse_rate': 1.8,
     'pulse_amplitude': 0.12,
@@ -516,7 +516,9 @@ UI_ACTIVE: str = '#0f3460'
 
 
 class SettingsWindow:
-    """Modal settings panel with instant-apply sliders and dropdowns."""
+    """Modal settings panel with instant-apply sliders and dropdowns.
+    Contains a scrollable frame so all controls fit on small screens (1280×720).
+    """
 
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -524,80 +526,121 @@ class SettingsWindow:
 
         self.window = tk.Toplevel(app.root)
         self.window.title('⚙ Hermes Cube — Настройки')
-        self.window.geometry('420x500')
+        self.window.geometry('400x420')
         self.window.resizable(True, True)
         self.window.configure(bg=UI_BG)
         self.window.transient(app.root)
         self.window.grab_set()
+        self.window.minsize(380, 300)
 
-        # Grid columns
-        self.window.columnconfigure(0, weight=0)
-        self.window.columnconfigure(1, weight=1)
-        self.window.columnconfigure(2, weight=0)
+        # ─── Scrollable frame ───────────────────────────────────────
+        canvas = tk.Canvas(self.window, bg=UI_BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.window, orient='vertical', command=canvas.yview)
+        self.scroll_frame = tk.Frame(canvas, bg=UI_BG)
 
-        # ─── UI sections ────────────────────────────────────────────
-        row: int = 0
+        self.scroll_frame.bind(
+            '<Configure>',
+            lambda e: canvas.configure(scrollregion=canvas.bbox('all')),
+        )
+        canvas.create_window((0, 0), window=self.scroll_frame, anchor='nw', width=380)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
+        # Mousewheel scrolling
+        def _on_mousewheel(event: tk.Event) -> None:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+
+        def _on_mousewheel_linux(event: tk.Event) -> None:
+            canvas.yview_scroll(-1 if event.num == 4 else 1, 'units')
+
+        canvas.bind_all('<MouseWheel>', _on_mousewheel, add='+')
+        canvas.bind_all('<Button-4>', _on_mousewheel_linux, add='+')
+        canvas.bind_all('<Button-5>', _on_mousewheel_linux, add='+')
+
+        # Cleanup bindings on destroy
+        self.window.bind(
+            '<Destroy>',
+            lambda e: (
+                canvas.unbind_all('<MouseWheel>'),
+                canvas.unbind_all('<Button-4>'),
+                canvas.unbind_all('<Button-5>'),
+            ),
+            add='+',
+        )
+
+        # ─── Content frame (parent = scroll_frame) ──────────────────
+        parent = self.scroll_frame
+
         style = ttk.Style()
         style.theme_use('clam')
         style.configure('TLabel', background=UI_BG, foreground=UI_FG,
                         font=('Segoe UI', 10))
         style.configure('TScale', background=UI_BG)
 
-        row = self._add_title(row)
-        row = self._add_slider('cube_scale', 'Размер куба', 0.08, 0.6, row)
-        row = self._add_slider('rotation_speed', 'Скорость вращения', 0.05, 1.0, row)
-        row = self._add_slider('pulse_rate', 'Частота пульсации', 0.3, 5.0, row)
-        row = self._add_slider('pulse_amplitude', 'Амплитуда пульсации', 0.0, 0.35, row)
+        parent.columnconfigure(0, weight=0)
+        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(2, weight=0)
 
-        row = self._add_section('Форма', row)
-        row = self._add_dropdown('shape_preset', 'Пресет формы',
+        row: int = 0
+        row = self._add_title(parent, row)
+        row = self._add_slider(parent, 'cube_scale', 'Размер куба', 0.08, 0.5, row)
+        row = self._add_slider(parent, 'rotation_speed', 'Скорость вращения', 0.05, 1.0, row)
+        row = self._add_slider(parent, 'pulse_rate', 'Частота пульсации', 0.3, 5.0, row)
+        row = self._add_slider(parent, 'pulse_amplitude', 'Амплитуда пульсации', 0.0, 0.35, row)
+
+        row = self._add_section(parent, 'Форма', row)
+        row = self._add_dropdown(parent, 'shape_preset', 'Пресет формы',
                                  ['cube', 'sphere', 'torus', 'dna', 'metaball'], row)
-        row = self._add_slider('morph_progress', 'Морфинг (куб → форма)', 0.0, 1.0, row)
+        row = self._add_slider(parent, 'morph_progress', 'Морфинг (куб → форма)', 0.0, 1.0, row)
 
-        row = self._add_section('Анимация частиц', row)
-        row = self._add_dropdown('particle_mode', 'Режим',
+        row = self._add_section(parent, 'Анимация частиц', row)
+        row = self._add_dropdown(parent, 'particle_mode', 'Режим',
                                  ['off', 'wave', 'breathe', 'orbit', 'geyser'], row)
-        row = self._add_slider('wave_speed', 'Скорость анимации', 0.2, 5.0, row)
-        row = self._add_slider('wave_amp', 'Амплитуда смещения', 0.0, 0.5, row)
+        row = self._add_slider(parent, 'wave_speed', 'Скорость анимации', 0.2, 5.0, row)
+        row = self._add_slider(parent, 'wave_amp', 'Амплитуда смещения', 0.0, 0.5, row)
 
-        row = self._add_section('Частицы', row)
-        row = self._add_slider('particle_density', 'Плотность', MIN_DENSITY, MAX_DENSITY, row, 0)
-        row = self._add_slider('cell_size', 'Размер (px)', MIN_CELL_SIZE, MAX_CELL_SIZE, row, 0)
+        row = self._add_section(parent, 'Частицы', row)
+        row = self._add_slider(parent, 'particle_density', 'Плотность', MIN_DENSITY, MAX_DENSITY, row, 0)
+        row = self._add_slider(parent, 'cell_size', 'Размер (px)', MIN_CELL_SIZE, MAX_CELL_SIZE, row, 0)
 
-        row = self._add_section('Стиль', row)
-        row = self._add_dropdown('symbol', 'Форма частиц', ['square', 'circle', 'dot'], row)
+        row = self._add_section(parent, 'Стиль', row)
+        row = self._add_dropdown(parent, 'symbol', 'Форма частиц', ['square', 'circle', 'dot'], row)
 
-        row = self._add_topmost_checkbox(row)
-        self._add_buttons(row)
+        row = self._add_topmost_checkbox(parent, row)
+        self._add_buttons(parent, row)
 
     # ── UI helpers ─────────────────────────────────────────────────
 
-    def _add_title(self, row: int) -> int:
-        tk.Label(self.window, text='♢ Hermes Cube', fg=UI_ACCENT, bg=UI_BG,
+    @staticmethod
+    def _add_title(parent: tk.Frame, row: int) -> int:
+        tk.Label(parent, text='♢ Hermes Cube', fg=UI_ACCENT, bg=UI_BG,
                  font=('Segoe UI', 14, 'bold')).grid(
             row=row, column=0, columnspan=3, pady=(15, 5))
         row += 1
-        tk.Label(self.window, text='Настройки аватара', fg='#888', bg=UI_BG,
+        tk.Label(parent, text='Настройки аватара', fg='#888', bg=UI_BG,
                  font=('Segoe UI', 9)).grid(
             row=row, column=0, columnspan=3)
         row += 1
-        ttk.Separator(self.window, orient='horizontal').grid(
+        ttk.Separator(parent, orient='horizontal').grid(
             row=row, column=0, columnspan=3, sticky='ew', padx=15, pady=8)
         return row + 1
 
-    def _add_section(self, title: str, row: int) -> int:
-        tk.Label(self.window, text=title, fg=UI_FG, bg=UI_BG,
+    @staticmethod
+    def _add_section(parent: tk.Frame, title: str, row: int) -> int:
+        tk.Label(parent, text=title, fg=UI_FG, bg=UI_BG,
                  font=('Segoe UI', 10, 'bold')).grid(
             row=row, column=0, sticky='w', padx=15, pady=(10, 2))
         return row + 1
 
-    def _add_slider(self, key: str, label: str,
+    def _add_slider(self, parent: tk.Frame, key: str, label: str,
                     min_v: float, max_v: float, row: int,
                     digits: int = 2) -> int:
-        tk.Label(self.window, text=label, fg=UI_FG, bg=UI_BG,
+        tk.Label(parent, text=label, fg=UI_FG, bg=UI_BG,
                  font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky='w', padx=(15, 5))
-        var = tk.DoubleVar(value=self.config.get(key, 0.0))
+        var = tk.DoubleVar(value=self.config.get(key, 1.0))
 
         def on_change(val: str, k: str = key, v: tk.DoubleVar = var) -> None:
             self.config[k] = float(val)
@@ -608,25 +651,26 @@ class SettingsWindow:
             elif k == 'cell_size':
                 self.app.config['cell_size'] = max(MIN_CELL_SIZE, int(float(val)))
 
-        scale = tk.Scale(self.window, from_=min_v, to=max_v,
+        scale = tk.Scale(parent, from_=min_v, to=max_v,
                          resolution=10 ** -digits,
                          orient=tk.HORIZONTAL, variable=var, command=on_change,
                          length=180, bg=UI_BG, fg=UI_FG,
                          highlightbackground=UI_BG,
                          troughcolor='#16213e', activebackground=UI_ACTIVE)
-        val_label = tk.Label(self.window, textvariable=var, fg=UI_ACCENT,
+        val_label = tk.Label(parent, textvariable=var, fg=UI_ACCENT,
                              bg=UI_BG, font=('Segoe UI', 9, 'bold'), width=4)
         scale.grid(row=row, column=1, sticky='ew', padx=(3, 3), pady=2)
         val_label.grid(row=row, column=2, sticky='w', padx=(0, 15))
         return row + 1
 
-    def _add_dropdown(self, key: str, label: str,
+    def _add_dropdown(self, parent: tk.Frame, key: str, label: str,
                       options: List[str], row: int) -> int:
-        tk.Label(self.window, text=label, fg=UI_FG, bg=UI_BG,
+        tk.Label(parent, text=label, fg=UI_FG, bg=UI_BG,
                  font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky='w', padx=(15, 5))
-        var = tk.StringVar(value=self.config.get(key, options[0]))
-        dropdown = ttk.Combobox(self.window, textvariable=var,
+        initial: str = self.config.get(key, options[0])
+        var = tk.StringVar(value=initial)
+        dropdown = ttk.Combobox(parent, textvariable=var,
                                 values=options, state='readonly', width=14)
         dropdown.grid(row=row, column=1, sticky='w', padx=5, pady=2)
 
@@ -637,9 +681,9 @@ class SettingsWindow:
         var.trace_add('write', on_change)
         return row + 1
 
-    def _add_topmost_checkbox(self, row: int) -> int:
+    def _add_topmost_checkbox(self, parent: tk.Frame, row: int) -> int:
         var = tk.BooleanVar(value=self.config.get('always_on_top', True))
-        cb = tk.Checkbutton(self.window, text='Поверх всех окон',
+        cb = tk.Checkbutton(parent, text='Поверх всех окон',
                             variable=var, bg=UI_BG, fg=UI_FG,
                             selectcolor='#16213e',
                             activebackground=UI_BG, activeforeground=UI_FG,
@@ -654,8 +698,8 @@ class SettingsWindow:
         cb.configure(command=on_change)
         return row + 1
 
-    def _add_buttons(self, row: int) -> None:
-        frame = tk.Frame(self.window, bg=UI_BG)
+    def _add_buttons(self, parent: tk.Frame, row: int) -> None:
+        frame = tk.Frame(parent, bg=UI_BG)
         frame.grid(row=row, column=0, columnspan=3, pady=15)
 
         def save() -> None:
@@ -665,10 +709,11 @@ class SettingsWindow:
             for key in ('rotation_speed', 'pulse_rate', 'pulse_amplitude'):
                 self.config[key] = round(self.config[key], 2)
             self.config['cube_scale'] = round(self.config['cube_scale'], 3)
-            # Sync to app
+            # Sync all to app
             for k, v in self.config.items():
                 self.app.config[k] = v
             self.app.engine.recalc(self.app.config)
+            self.app._auto_resize_window()
             save_config(self.app.config)
             self.window.destroy()
 
@@ -727,8 +772,8 @@ class CubeApp:
 
         self.root.geometry(f'{w}x{h}+{pos_x}+{pos_y}')
         self.root.resizable(True, True)
-        self.root.configure(bg=TRANSPARENT_COLOR)
         self.root.overrideredirect(True)
+        self.root.configure(bg=TRANSPARENT_COLOR)
         self.root.attributes('-transparentcolor', TRANSPARENT_COLOR)
         if self.config.get('always_on_top', True):
             self.root.attributes('-topmost', True)
@@ -784,6 +829,36 @@ class CubeApp:
 
     # ── Window visibility ──────────────────────────────────────────────
 
+    # ── Window auto-resize ─────────────────────────────────────────────
+
+    def _auto_resize_window(self) -> None:
+        """Expand window to fit all particles.
+        Safe: uses direct scale calculation, no get_frame call,
+        no nested update(), hard-capped at screen-safe size.
+        """
+        MAX_PX: int = 1280  # don't exceed user's screen width
+        try:
+            scale_val: float = float(self.config.get('cube_scale', 0.27))
+            pulse_amp: float = float(self.config.get('pulse_amplitude', 0.12))
+            anim_amp: float = float(self.config.get('wave_amp', 0.12))
+            # Worst-case particle extent: cube radius (sqrt(3)~1.73) + jitter + anim
+            max_radius: float = 2.0 + anim_amp * 4.0
+            w_cur: int = max(10, self.root.winfo_width())
+            h_cur: int = max(10, self.root.winfo_height())
+            base: float = float(min(w_cur, h_cur))
+            if base < 10:
+                return
+            scale: float = base * scale_val / (1.0 + pulse_amp)
+            needed: float = 2.0 * (max_radius * scale + 60.0)
+            # Clamp to sane range
+            if math.isnan(needed) or math.isinf(needed) or needed > MAX_PX:
+                needed = float(MAX_PX)
+            needed_int: int = max(300, int(needed))
+            if needed_int > max(w_cur, h_cur):
+                self.root.geometry(f'{needed_int}x{needed_int}')
+        except Exception:
+            pass  # best-effort resize, never crash
+
     def show_window(self) -> None:
         """Restore the overlay window."""
         self.root.deiconify()
@@ -832,6 +907,7 @@ class CubeApp:
         self.root.lift()
         self.root.lift()
         self.root.update()
+        self._auto_resize_window()
         self._render_frame()
 
     def _on_resize(self, event: tk.Event) -> None:
