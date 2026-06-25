@@ -1,27 +1,59 @@
 #!/usr/bin/env python3
-"""
-Hermes Cube — Desktop Particle Avatar
+"""Hermes Cube — Desktop Particle Avatar
 System tray app with animated 3D particle cube.
 
-Architecture:
-  - ConfigManager: loads/saves typed config with defaults
-  - ShapeGenerator: pure functions that map cube points → target shapes
-  - ParticleAnimation: numpy-vectorized wave/breathe/orbit/geyser routines
-  - CubeEngine: orchestrates shapes + animation + rotation → 3D → 2D projection
-  - CubeApp: Tkinter window, event loop, rendering pipeline
-  - SettingsWindow: scrollable real-time settings panel
+Single-instance guard: предотвращает запуск второго окна.
 """
 
 from __future__ import annotations
 
+import sys
+import os
+import tempfile
 import atexit
+
+# ── Single-instance lock ───────────────────────────────────────────────
+_LOCK_FILE: str = os.path.join(
+    tempfile.gettempdir(), 'hermes_cube.lock',
+)
+
+def _check_single_instance() -> None:
+    """Exit silently if another Hermes Cube is already running."""
+    try:
+        # Try to create lock file exclusively
+        fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        # Remove lock on normal exit
+        atexit.register(lambda: os.unlink(_LOCK_FILE))
+    except FileExistsError:
+        # Lock exists — check if PID still alive
+        try:
+            with open(_LOCK_FILE) as f:
+                old_pid = int(f.read().strip())
+            if sys.platform == 'win32':
+                import ctypes
+                handle = ctypes.windll.kernel32.OpenProcess(
+                    0x0400, False, old_pid)
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    sys.exit(0)
+            else:
+                os.kill(old_pid, 0)
+                sys.exit(0)
+        except (ValueError, OSError, ProcessLookupError):
+            try:
+                os.unlink(_LOCK_FILE)
+            except OSError:
+                pass
+            _check_single_instance()
+            return
+
+_check_single_instance()
+
 from collections import deque
 from typing import Any, Dict, Deque, List, Optional, Tuple
 
-import json
-import math
-import os
-import sys
 import threading
 
 import numpy as np
