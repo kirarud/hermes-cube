@@ -17,6 +17,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 import colorsys
 import json
+import os
+import subprocess
 import threading
 import tkinter as tk
 import math
@@ -31,6 +33,12 @@ import urllib.error
 
 LM_STUDIO_URL: str = "http://127.0.0.1:1234"
 AI_MODEL: str = "gemma-4-e4b-it"
+LM_STUDIO_PATH: str = os.path.join(
+    os.environ.get('LOCALAPPDATA', 'C:\\Users\\kirarud\\AppData\\Local'),
+    'Programs\\LM Studio\\LM Studio.exe',
+)
+# Model identifier for LM Studio's internal registry
+LM_STUDIO_MODEL_ID: str = "lmstudio-community/gemma-4-E4B-it-GGUF"
 
 AI_MOODS: Dict[str, Dict[str, float]] = {
     'idle':     {'pulse_rate': 1.8, 'pulse_amp': 0.12, 'speed': 0.28, 'color_shift': 0.0},
@@ -39,6 +47,117 @@ AI_MOODS: Dict[str, Dict[str, float]] = {
     'happy':    {'pulse_rate': 2.8, 'pulse_amp': 0.22, 'speed': 0.50, 'color_shift': 0.12},
     'sad':      {'pulse_rate': 0.8, 'pulse_amp': 0.05, 'speed': 0.10, 'color_shift': 0.55},
 }
+
+_LM_PROCESS: Optional[subprocess.Popen] = None
+
+
+def _ensure_lm_studio() -> bool:
+    """Start LM Studio if not running, load model, return True when ready.
+
+    Polls LM Studio API:
+      1. Start the process if API is unreachable
+      2. Wait for API server to respond (up to 60s)
+      3. Load the target model via /v1/models/load
+      4. Wait for model to appear in /v1/models list
+    Returns True when model is ready, False on timeout.
+    """
+    global _LM_PROCESS
+
+    # Already responding?
+    if _check_api_ready():
+        return True
+
+    # Launch LM Studio
+    if not os.path.isfile(LM_STUDIO_PATH):
+        print(f"[AI] LM Studio not found: {LM_STUDIO_PATH}", flush=True)
+        return False
+
+    if _LM_PROCESS is None or _LM_PROCESS.poll() is not None:
+        print("[AI] Starting LM Studio...", flush=True)
+        try:
+            _LM_PROCESS = subprocess.Popen(
+                [LM_STUDIO_PATH],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except Exception as e:
+            print(f"[AI] Failed to start LM Studio: {e}", flush=True)
+            return False
+
+    # Wait for API server (up to 60s)
+    print("[AI] Waiting for LM Studio API...", flush=True)
+    for _ in range(60):
+        if _check_api_ready():
+            print("[AI] LM Studio API ready", flush=True)
+            break
+        time.sleep(1.0)
+    else:
+        print("[AI] Timeout waiting for LM Studio API", flush=True)
+        return False
+
+    # Load the model
+    print(f"[AI] Loading model {AI_MODEL}...", flush=True)
+    _load_model()
+    for _ in range(30):
+        if _check_model_loaded():
+            print(f"[AI] Model {AI_MODEL} loaded", flush=True)
+            return True
+        time.sleep(1.0)
+
+    print("[AI] Timeout waiting for model to load", flush=True)
+    return False
+
+
+def _check_api_ready() -> bool:
+    """Ping LM Studio API health endpoint."""
+    try:
+        req = urllib.request.Request(
+            f"{LM_STUDIO_URL}/v1/models",
+            method='GET',
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _check_model_loaded() -> bool:
+    """Check if our target model is in the loaded models list."""
+    try:
+        req = urllib.request.Request(f"{LM_STUDIO_URL}/v1/models")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data: Dict = json.loads(resp.read())
+            models: List = data.get('data', [])
+            for m in models:
+                mid: str = m.get('id', '') or m.get('name', '')
+                if AI_MODEL in mid or LM_STUDIO_MODEL_ID in mid:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _load_model() -> None:
+    """Tell LM Studio to load the target model via API."""
+    try:
+        data: bytes = json.dumps({
+            "model": LM_STUDIO_MODEL_ID,
+        }).encode()
+        req = urllib.request.Request(
+            f"{LM_STUDIO_URL}/v1/models/load",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            print(f"[AI] Load model response: {resp.status}", flush=True)
+    except urllib.error.HTTPError as e:
+        # Some LM Studio versions return 200 but not 201
+        if e.code == 404:
+            print("[AI] /v1/models/load not supported, model may auto-load", flush=True)
+        else:
+            print(f"[AI] Load model HTTP {e.code}: {e.read().decode()}", flush=True)
+    except Exception as e:
+        print(f"[AI] Load model error: {e}", flush=True)
 
 
 def ai_chat(
@@ -422,7 +541,13 @@ class AiCore:
         self._thinking = True
 
         def do_ai() -> None:
-            response: str = ai_chat(text)
+            # Auto-start LM Studio if needed
+            if not _ensure_lm_studio():
+                self.mood = 'idle'
+                self._thinking = False
+                print("[AI] LM Studio not available", flush=True)
+                return
+            response: str = ai_chat(text, history=self.history)
             self.last_response = response
             self.mood = analyze_mood(response)
             self.history.append({"role": "ai", "text": response})

@@ -560,6 +560,7 @@ def _setup_tray_icon(
         menu = pystray.Menu(
             pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
             pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
+            pystray.MenuItem('💬 Ввод (C)', lambda i, m: app_ref.ai.toggle_input()),
             pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref._toggle_trails()),
             pystray.MenuItem('▤ PixelGrid', lambda i, m: app_ref._toggle_pixel_grid()),
             pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
