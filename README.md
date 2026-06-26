@@ -23,29 +23,35 @@
 
 ## 🎬 Демо
 
-![Главный экран](screenshots/hero.png)
-*Куб на рабочем столе — прозрачный overlay поверх всех окон*
+![Hero](screenshots/hero.png)
+*♢ Hermes Cube — 3D-куб из частиц на прозрачном фоне*
 
-![Окно настроек](screenshots/settings.png)
-*Настройки с прокруткой — формы, анимации, плотность, морфинг*
+![Все 5 форм](screenshots/shapes.png)
+*Куб, Сфера, Тор, ДНК, Метаболл — переключение в реальном времени*
 
-![Режим перетаскивания](screenshots/draggable.png)
-*Режим перетаскивания (T) — выпуклая оболочка вокруг куба*
+![5 анимаций](screenshots/animations.png)
+*off, wave, breathe, orbit, geyser — анимация частиц*
 
-![Трейлы](screenshots/trails.png)
-*Трейлы (R) — шлейф из положений куба*
+![Матрица форм × анимаций](screenshots/matrix.png)
+*Все комбинации 5 форм × 5 анимаций*
 
-![AI-ввод](screenshots/ai_input.png)
-*Окно ввода сообщения для AI (C / трей)*
+![Морфинг](screenshots/morph.png)
+*Плавный морфинг 0-100% от куба к выбранной форме*
 
-![PixelGrid](screenshots/pixelgrid.png)
-*PixelGrid — пиксельный framebuffer для агентов (G / трей)*
+![AI-режим](screenshots/ai.png)
+*AI-диалог через LM Studio — авто-запуск, смена настроения куба*
 
-![Пиксельный агент](screenshots/agent.png)
-*Агент — частица с ролью, вылетает из куба (A)*
+![Плотность частиц](screenshots/density.png)
+*От 8 до 20 частиц на грань — настройка производительности*
 
-![Overlay на десктопе](screenshots/overlay.png)
-*Куб поверх окон — всегда на виду*
+![Char mode](screenshots/char_symbols.png)
+*Поверхность куба из символов вместо точек*
+
+![Куб](screenshots/cube.png)
+![Сфера](screenshots/sphere.png)
+![Тор](screenshots/torus.png)
+![ДНК](screenshots/dna.png)
+![Метаболл](screenshots/metaball.png)
 
 ## ⚙️ Горячие клавиши
 
