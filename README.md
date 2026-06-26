@@ -23,7 +23,17 @@
 
 ## 🎬 Демо
 
-![Hermes Cube Preview](screenshots/preview.png)
+![Основной вид](screenshots/preview.png)
+*Куб в режиме ожидания — 64×64 частицы с RGB-градиентом*
+
+![Все формы](screenshots/shapes_grid.png)
+*5 форм: cube, sphere, torus, dna, metaball*
+
+![Морфинг](screenshots/morph.png)
+*Плавный морфинг между формами (0-100%)*
+
+![AI-чат](screenshots/ai_chat.png)
+*AI-режим: нажми C, введи сообщение — куб ответит и изменит настроение*
 
 ## ⚙️ Горячие клавиши
 
