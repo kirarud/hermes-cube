@@ -49,6 +49,7 @@ class WindowSystem:
         self.root.overrideredirect(True)
         self.root.configure(bg=TRANSPARENT_COLOR)
         self.root.attributes('-transparentcolor', TRANSPARENT_COLOR)
+        self.root.attributes('-topmost', True)  # всегда поверх всех окон
 
         # Canvas
         self.canvas = tk.Canvas(
@@ -70,6 +71,7 @@ class WindowSystem:
     def show(self) -> None:
         """Показать окно."""
         self.root.deiconify()
+        self.root.attributes('-topmost', True)
         self.root.lift()
         self.root.lift()
         self.root.lift()

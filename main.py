@@ -37,12 +37,73 @@ from char_cube import SYMBOL_SETS
 from cube_app import (
     load_config, save_config, DEFAULT_CONFIG,
     MIN_CELL_SIZE, MAX_CELL_SIZE, FRAME_MS,
-    _convex_hull_2d, _expand_hull, _setup_tray_icon, _remove_tray_icon_force,
+    _convex_hull_2d, _expand_hull, _remove_tray_icon_force,
     UI_ACCENT, SettingsWindow,
-    ParticleAgentManager,
 )
 
+
+def _create_tray_image():
+    """Создать иконку трея (64×64). Копия из cube_app.py."""
+    from PIL import Image, ImageDraw
+    tray_path = os.path.join(
+        os.environ.get('APPDATA', os.path.expanduser('~')),
+        'HermesCube', 'tray_icon.png',
+    )
+    if os.path.isfile(tray_path):
+        try:
+            return Image.open(tray_path).convert('RGBA').resize((64, 64), Image.LANCZOS)
+        except Exception:
+            pass
+    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    pixel_data = [
+        (16, 8, 255, 50, 50), (18, 8, 255, 100, 50), (20, 8, 50, 255, 50),
+        (22, 8, 50, 200, 100), (24, 8, 50, 50, 255), (26, 8, 100, 50, 200),
+        (28, 8, 200, 50, 100), (14, 10, 255, 80, 80), (16, 10, 255, 150, 50),
+        (18, 10, 100, 255, 100), (20, 10, 80, 200, 120), (22, 10, 80, 80, 255),
+        (24, 10, 150, 50, 200), (26, 10, 200, 80, 150), (28, 10, 200, 100, 100),
+        (30, 10, 150, 150, 50), (12, 12, 255, 100, 100), (14, 12, 255, 200, 80),
+        (16, 12, 150, 255, 150), (18, 12, 100, 255, 200), (20, 12, 100, 100, 255),
+        (22, 12, 200, 80, 255), (24, 12, 255, 100, 200), (26, 12, 255, 150, 100),
+        (28, 12, 200, 200, 80), (30, 12, 150, 200, 100),
+    ]
+    for px, py, r, g, b in pixel_data:
+        draw.rectangle([px, py, px + 3, py + 3], fill=(r, g, b, 255))
+    draw.text((2, 52), '♢', fill=(150, 150, 255, 200))
+    return img
+
+
+def _setup_tray_icon_engine(app_ref: Any) -> Optional[Any]:
+    """Создать иконку трея для HermesEngine."""
+    import pystray
+    try:
+        image = _create_tray_image()
+        menu = pystray.Menu(
+            pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
+            pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
+            pystray.MenuItem('💬 Ввод (C)', lambda i, m: app_ref.input_win.toggle()),
+            pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref._toggle_trails()),
+            pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
+        )
+        icon = pystray.Icon('HermesCube', image, '♢ Hermes Cube', menu)
+        if hasattr(icon, 'run_detached'):
+            icon.run_detached()
+        else:
+            threading.Thread(target=icon.run, daemon=False).start()
+        app_ref._tray_guid = 'HermesCube'
+        return icon
+    except Exception as e:
+        print(f"Tray icon failed: {e}", flush=True)
+        return None
+
+
 TRANSPARENT_COLOR: str = '#000001'
+
+# Гарантированная очистка трея при любом завершении
+import atexit
+atexit.register(_remove_tray_icon_force)
 
 
 class HermesEngine:
@@ -118,7 +179,9 @@ class HermesEngine:
         self.window.root.bind('R', lambda e: self._toggle_trails())
 
         # Tray
-        threading.Thread(target=lambda: _setup_tray_icon(self), daemon=False).start()
+        self.tray_icon: Optional[Any] = None
+        threading.Thread(target=lambda: setattr(
+            self, 'tray_icon', _setup_tray_icon_engine(self)), daemon=False).start()
 
     # ── Drag ─────────────────────────────────────────────────────────
 
@@ -271,7 +334,15 @@ class HermesEngine:
     def quit_app(self) -> None:
         self.running = False
         save_config(self.config)
+
+        # Stop tray icon FIRST (pystray), then force-remove via Win32
+        if hasattr(self, 'tray_icon') and self.tray_icon is not None:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
         _remove_tray_icon_force()
+
         self.text_overlay.close()
         self.window.destroy()
         os._exit(0)
