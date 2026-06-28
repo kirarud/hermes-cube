@@ -1,0 +1,98 @@
+"""systems/color.py — Цвет частиц с depth shading и HSV-сдвигом.
+
+Читает:
+  sim.color — базовые цвета (r0, g0, b0)
+  render.depth — z-глубина
+  meta.color_shift — AI mood HSV shift
+
+Пишет:
+  render.final_rgb — (N, 3) uint8 готовый к отрисовке
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from numpy.typing import NDArray
+
+from core.world import World
+
+
+def update(world: World, dt: float) -> None:
+    """Вычислить финальные цвета: depth_factor × HSV shift."""
+    n = world.sim.active_count
+    if n == 0:
+        world.render.final_rgb = np.array([], dtype=np.uint8).reshape(0, 3)
+        return
+
+    r0 = world.sim.color[:n, 0]
+    g0 = world.sim.color[:n, 1]
+    b0 = world.sim.color[:n, 2]
+    pz = world.render.depth[:n]
+
+    # Depth factor: 0.6 + 0.4 * normalised_z
+    depth_factor: NDArray[np.float64] = 0.6 + 0.4 * (pz + 1.0) / 2.0
+
+    r_p: NDArray[np.float64] = np.clip(r0 * depth_factor, 0, 255)
+    g_p: NDArray[np.float64] = np.clip(g0 * depth_factor, 0, 255)
+    b_p: NDArray[np.float64] = np.clip(b0 * depth_factor, 0, 255)
+
+    # HSV shift от AI mood
+    shift: float = world.meta.color_shift
+    if shift > 0.01:
+        r_p, g_p, b_p = _apply_hsv_shift(r_p, g_p, b_p, shift)
+
+    world.render.final_rgb = np.column_stack(
+        (r_p, g_p, b_p),
+    ).astype(np.uint8)
+
+
+def _apply_hsv_shift(
+    r: NDArray[np.float64], g: NDArray[np.float64], b: NDArray[np.float64],
+    shift: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Векторизованный RGB→HSV→сдвиг→RGB (без colorsys). Копия из cube_app.py."""
+    rn = r / 255.0
+    gn = g / 255.0
+    bn = b / 255.0
+
+    mx = np.maximum(np.maximum(rn, gn), bn)
+    mn = np.minimum(np.minimum(rn, gn), bn)
+    delta = mx - mn
+
+    h = np.zeros_like(rn)
+    mask = delta > 1e-6
+    rm = mask & (mx == rn)
+    gm = mask & (mx == gn)
+    bm = mask & (mx == bn)
+    h[rm] = ((gn[rm] - bn[rm]) / delta[rm]) % 6.0
+    h[gm] = ((bn[gm] - rn[gm]) / delta[gm]) + 2.0
+    h[bm] = ((rn[bm] - gn[bm]) / delta[bm]) + 4.0
+    h = h / 6.0
+
+    s = np.zeros_like(rn)
+    s[mask] = delta[mask] / mx[mask]
+    v = mx
+
+    h = (h + shift) % 1.0
+
+    h6 = h * 6.0
+    hi = np.floor(h6).astype(np.int32)
+    f = h6 - hi.astype(np.float64)
+    p = v * (1.0 - s)
+    q = v * (1.0 - s * f)
+    t = v * (1.0 - s * (1.0 - f))
+
+    r_out = np.clip(np.select(
+        [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
+        [v, q, p, p, t, v]
+    ) * 255.0, 0, 255)
+    g_out = np.clip(np.select(
+        [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
+        [t, v, v, q, p, p]
+    ) * 255.0, 0, 255)
+    b_out = np.clip(np.select(
+        [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
+        [p, p, t, v, v, q]
+    ) * 255.0, 0, 255)
+
+    return (r_out, g_out, b_out)
