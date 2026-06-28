@@ -12,44 +12,41 @@ import os
 import tempfile
 import atexit
 
-# ── Single-instance lock ───────────────────────────────────────────────
-_LOCK_FILE: str = os.path.join(
-    tempfile.gettempdir(), 'hermes_cube.lock',
-)
+# ── Single-instance guard ───────────────────────────────────────────────
+# main.py already sets the lock and exports HERMES_LOCKED=1
+if not os.environ.get('HERMES_LOCKED'):
+    _LOCK_FILE: str = os.path.join(
+        tempfile.gettempdir(), 'hermes_cube.lock',
+    )
 
-def _check_single_instance() -> None:
-    """Exit silently if another Hermes Cube is already running."""
-    try:
-        # Try to create lock file exclusively
-        fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        # Remove lock on normal exit
-        atexit.register(lambda: os.unlink(_LOCK_FILE))
-    except FileExistsError:
-        # Lock exists — check if PID still alive
+    def _check_single_instance() -> None:
         try:
-            with open(_LOCK_FILE) as f:
-                old_pid = int(f.read().strip())
-            if sys.platform == 'win32':
-                import ctypes
-                handle = ctypes.windll.kernel32.OpenProcess(
-                    0x0400, False, old_pid)
-                if handle:
-                    ctypes.windll.kernel32.CloseHandle(handle)
-                    sys.exit(0)
-            else:
-                os.kill(old_pid, 0)
-                sys.exit(0)
-        except (ValueError, OSError, ProcessLookupError):
+            fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            atexit.register(lambda: os.unlink(_LOCK_FILE))
+        except FileExistsError:
             try:
-                os.unlink(_LOCK_FILE)
-            except OSError:
-                pass
-            _check_single_instance()
-            return
+                with open(_LOCK_FILE) as f:
+                    old_pid = int(f.read().strip())
+                if sys.platform == 'win32':
+                    import ctypes
+                    handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, old_pid)
+                    if handle:
+                        ctypes.windll.kernel32.CloseHandle(handle)
+                        sys.exit(0)
+                else:
+                    os.kill(old_pid, 0)
+                    sys.exit(0)
+            except (ValueError, OSError, ProcessLookupError):
+                try:
+                    os.unlink(_LOCK_FILE)
+                except OSError:
+                    pass
+                _check_single_instance()
+                return
 
-_check_single_instance()
+    _check_single_instance()
 
 from collections import deque
 from typing import Any, Dict, Deque, List, Optional, Tuple

@@ -16,9 +16,43 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+import atexit
 import threading
 import tkinter as tk
 from typing import Any, Dict, List, Optional
+
+# ── Single-instance lock ──────────────────────────────────────────────
+_LOCK_FILE: str = os.path.join(tempfile.gettempdir(), 'hermes_cube.lock')
+
+def _check_single_instance() -> None:
+    try:
+        fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        atexit.register(lambda: os.unlink(_LOCK_FILE))
+    except FileExistsError:
+        try:
+            with open(_LOCK_FILE) as f:
+                old_pid = int(f.read().strip())
+            if sys.platform == 'win32':
+                import ctypes
+                handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, old_pid)
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    sys.exit(0)
+            else:
+                os.kill(old_pid, 0)
+                sys.exit(0)
+        except (ValueError, OSError, ProcessLookupError):
+            try:
+                os.unlink(_LOCK_FILE)
+            except OSError:
+                pass
+            _check_single_instance()
+            return
+
+_check_single_instance()
 
 # Ensure project root is in path early
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -34,6 +68,9 @@ from core.systems.input_window import InputWindowSystem
 from core.systems.drag import DragSystem
 from renderer import PointCloudRenderer
 from char_cube import SYMBOL_SETS
+
+# Signal cube_app.py that main.py already set the single-instance lock
+os.environ['HERMES_LOCKED'] = '1'
 from cube_app import (
     load_config, save_config, DEFAULT_CONFIG,
     MIN_CELL_SIZE, MAX_CELL_SIZE, FRAME_MS,
@@ -307,13 +344,21 @@ class HermesEngine:
             self.canvas.coords(self._drag_handle, 0, 0, 0, 0)
 
         # Render Graph
+        char_mode: str = self.config.get('char_mode', 'dots')
+        using_chars: bool = (char_mode != 'dots')
+        symbol_set_name: str = self.config.get('symbol_set', 'default')
+        symbols_set: list[str] = SYMBOL_SETS.get(symbol_set_name, SYMBOL_SETS['default'])
+        char_list: Optional[List[str]] = None
+        if using_chars and n > 0:
+            char_list = [symbols_set[i % len(symbols_set)] for i in range(n)]
+
         ctx = FrameContext(
             px=px, py=py, pz=pz, rgb=rgb_arr,
             cell=max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE))),
             symbol=self.config.get('symbol', 'square'),
             trail_enabled=self.world.render.trail_enabled,
             trail_layer=self.world.render.trail_layer,
-            using_chars=False, char_list=None, symbols_set=[],
+            using_chars=using_chars, char_list=char_list, symbols_set=symbols_set,
             config=self.config, w=w, h=h,
         )
         rgba_buf, bbox = self.render_graph.execute(ctx)
