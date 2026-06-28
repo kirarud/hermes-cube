@@ -122,6 +122,10 @@ class HermesEngine:
         # --- Window ---
         self.window = WindowSystem()
         self.canvas = self.window.canvas
+        # Aliases for SettingsWindow compatibility
+        self.root = self.window.root
+        self.engine = self  # SettingsWindow calls app.engine.recalc()
+        self._auto_resize_window = lambda: None  # stub (v2 handles auto-resize inherently)
 
         # --- Renderer ---
         self.renderer = PointCloudRenderer()
@@ -229,6 +233,20 @@ class HermesEngine:
         if not self._trail_enabled:
             self.world.render.trail_history.clear()
         self._show_mode_overlay('ТРЕЙЛЫ ВКЛ' if self._trail_enabled else 'ТРЕЙЛЫ ВЫКЛ')
+
+    def recalc(self, cfg: Dict[str, Any]) -> None:
+        """Bridge for SettingsWindow — перестраивает сетку частиц."""
+        import core.systems.grid_generator as gg
+        old_n = self.world.sim.active_count
+        self.world.meta.config = cfg
+        gg.update(self.world, 0.042)
+        if self.world.sim.active_count != old_n:
+            # Обновить render-буферы под новое количество частиц
+            n = self.world.sim.active_count
+            self.world.render.projected_x = self.world.render.projected_x[:n]
+            self.world.render.projected_y = self.world.render.projected_y[:n]
+            self.world.render.final_rgb = self.world.render.final_rgb[:n]
+            self.world.render.depth = self.world.render.depth[:n]
 
     # ── Settings ─────────────────────────────────────────────────────
 
