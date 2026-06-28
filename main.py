@@ -79,13 +79,13 @@ def _setup_tray_icon_engine(app_ref: Any) -> Optional[Any]:
     try:
         image = _create_tray_image()
         menu = pystray.Menu(
-            pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
-            pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
-            pystray.MenuItem('💬 Ввод (C)', lambda i, m: app_ref.input_win.toggle()),
-            pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref._toggle_trails()),
-            pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
+            pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.window.root.after(0, app_ref.toggle_window)),
+            pystray.MenuItem('↕ Переместить', lambda i, m: app_ref.window.root.after(0, app_ref._toggle_draggable)),
+            pystray.MenuItem('💬 Ввод (C)', lambda i, m: app_ref.window.root.after(0, app_ref.input_win.toggle)),
+            pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref.window.root.after(0, app_ref._toggle_trails)),
+            pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.window.root.after(0, app_ref.show_settings)),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
+            pystray.MenuItem('✕ Выход', lambda i, m: app_ref.window.root.after(0, app_ref.quit_app)),
         )
         icon = pystray.Icon('HermesCube', image, '♢ Hermes Cube', menu)
         if hasattr(icon, 'run_detached'):
@@ -353,10 +353,13 @@ class HermesEngine:
         self.running = False
         save_config(self.config)
 
-        # Stop tray icon FIRST (pystray), then force-remove via Win32
+        # Stop tray icon IN its own thread, then force-remove via Win32
         if hasattr(self, 'tray_icon') and self.tray_icon is not None:
             try:
-                self.tray_icon.stop()
+                import threading
+                t = threading.Thread(target=self.tray_icon.stop, daemon=True)
+                t.start()
+                t.join(timeout=2)
             except Exception:
                 pass
         _remove_tray_icon_force()
@@ -364,8 +367,7 @@ class HermesEngine:
         self.text_overlay.close()
         self.window.destroy()
 
-        # Не os._exit(0) — он не вызывает atexit.
-        # root.quit() завершает mainloop, atexit чистит lock и трей.
+        # root.quit() завершает mainloop, atexit чистит lock
         try:
             self.window.root.quit()
         except Exception:
