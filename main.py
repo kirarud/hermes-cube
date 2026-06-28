@@ -20,7 +20,7 @@ import threading
 import tkinter as tk
 from typing import Any, Dict, List, Optional
 
-# Ensure project root is in path
+# Ensure project root is in path early
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
@@ -345,7 +345,13 @@ class HermesEngine:
 
         self.text_overlay.close()
         self.window.destroy()
-        os._exit(0)
+
+        # Не os._exit(0) — он не вызывает atexit.
+        # root.quit() завершает mainloop, atexit чистит lock и трей.
+        try:
+            self.window.root.quit()
+        except Exception:
+            pass
 
     def run(self) -> None:
         """Запустить engine."""
