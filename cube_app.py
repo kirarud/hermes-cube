@@ -1367,16 +1367,17 @@ class CubeApp:
             self.root.after(FRAME_MS, self._render_frame)
             return
 
-        # ── AI mood override ─────────────────────────────────────────
-        mood_params: Dict[str, float] = self.ai.get_mood_override()
-        if mood_params:
-            self.config['pulse_rate'] = mood_params['pulse_rate']
-            self.config['pulse_amplitude'] = mood_params['pulse_amp']
-            self.config['rotation_speed'] = mood_params['speed']
-        self._ai_color_shift = self.ai.get_color_shift()
+        # ── AI mood override (from world.meta, not ai_module directly) ──
+        if world.meta.mood != 'idle':
+            mood_data = AI_MOODS.get(world.meta.mood, {})
+            if mood_data:
+                self.config['pulse_rate'] = mood_data.get('pulse_rate', self.config.get('pulse_rate', 1.8))
+                self.config['pulse_amplitude'] = mood_data.get('pulse_amp', self.config.get('pulse_amplitude', 0.12))
+                self.config['rotation_speed'] = mood_data.get('speed', self.config.get('rotation_speed', 0.28))
+        self._ai_color_shift = world.meta.color_shift
 
         # ── Mood change overlay ────────────────────────────────────────
-        current_mood: str = self.ai.mood
+        current_mood: str = world.meta.mood
         if current_mood != self._last_mood:
             self._last_mood = current_mood
             mood_labels: Dict[str, str] = {
@@ -1408,6 +1409,10 @@ class CubeApp:
         py = self.world.render.projected_y[:n]
         pz = self.world.render.depth[:n]
         rgb_arr = self.world.render.final_rgb[:n]
+
+        # Cube center (for AI text overlay)
+        cx_s: float = float(w) / 2.0 + self._cube_ox
+        cy_s: float = float(h) / 2.0 + self._cube_oy
 
         # Depth sort (painter's algorithm)
         order: NDArray[np.int64] = np.argsort(pz)
@@ -1480,13 +1485,13 @@ class CubeApp:
 
         # ── AI update — spawn response letters from cube center ─────────
         self.ai.update(FRAME_MS / 1000.0)
-        if (self.ai.last_response
-                and not self.ai._thinking
+        if (world.meta.ai_response
+                and not world.meta.ai_thinking
                 and len(self.ai.text_overlay.particles) == 0):
             # Spawn letters at cube center (screen position)
-            response_text: str = self.ai.last_response
+            response_text: str = world.meta.ai_response
             self.ai.spawn_response(response_text, int(cx_s), int(cy_s))
-            self.ai.last_response = ''  # clear to avoid re-spawn
+            world.meta.ai_response = ''  # clear to avoid re-spawn
 
         self.frame_count += 1
         self.root.after(FRAME_MS, self._render_frame)
