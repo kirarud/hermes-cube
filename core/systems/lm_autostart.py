@@ -21,14 +21,12 @@ from typing import Any, Dict, List, Optional
 
 from core.world import World
 
-# Конфиг LM Studio (из ai_module.py)
-LM_STUDIO_URL: str = "http://127.0.0.1:1234"
+from core.ai_constants import LM_STUDIO_URL, AI_MODEL, AI_MODEL_ID
+
 LM_STUDIO_PATH: str = os.path.join(
     os.environ.get('LOCALAPPDATA', 'C:\\Users\\kirarud\\AppData\\Local'),
     'Programs\\LM Studio\\LM Studio.exe',
 )
-LM_STUDIO_MODEL_ID: str = "lmstudio-community/gemma-4-E4B-it-GGUF"
-AI_MODEL: str = "gemma-4-e4b-it"
 
 _LM_PROCESS: Optional[subprocess.Popen] = None
 
@@ -108,7 +106,7 @@ class LMAutoStartSystem:
     @staticmethod
     def _load_model() -> None:
         try:
-            data = json.dumps({"model": LM_STUDIO_MODEL_ID}).encode()
+            data = json.dumps({"model": AI_MODEL_ID}).encode()
             req = urllib.request.Request(
                 f"{LM_STUDIO_URL}/v1/models/load",
                 data=data,
@@ -131,7 +129,7 @@ class LMAutoStartSystem:
                 data = json.loads(resp.read())
                 for m in data.get('data', []):
                     mid = m.get('id', '') or m.get('name', '')
-                    if AI_MODEL in mid or LM_STUDIO_MODEL_ID in mid:
+                    if AI_MODEL in mid or AI_MODEL_ID in mid:
                         return True
         except Exception:
             pass

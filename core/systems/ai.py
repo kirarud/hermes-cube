@@ -1,66 +1,107 @@
-"""systems/ai.py — AISystem: мост между InputSystem и AI-ядром.
+"""systems/ai.py — AISystem: AI-чат через LM Studio.
+
+Содержит ai_chat() — функцию отправки запроса к LM Studio API.
+Ранее находилась в ai_module.py, перемещена сюда при удалении старого модуля.
 
 Читает:
   meta.input_buffer — текст от пользователя
-  meta.config — настройки AI
 
 Пишет:
-  meta.ai_response — ответ AI (для TextOverlaySystem)
+  meta.ai_response — ответ AI
   meta.ai_thinking — True пока модель думает
-  meta.ai_requested — True если нужно запустить LM Studio
-  meta.mood — текущее настроение
-  meta.color_shift — HSV-сдвиг от настроения
-
-НЕ вызывает LM Studio напрямую — использует ai_module.ai_chat().
-НЕ знает про TextOverlay, InputWindow, Tkinter.
+  meta.chat_history — история диалога
 """
 
 from __future__ import annotations
 
 import json
 import threading
+import urllib.request
+import urllib.error
 from typing import Any, Dict, List, Optional
 
 from core.world import World
+from core.ai_constants import LM_STUDIO_URL, AI_MODEL
 
-# Импорт AI-ядра (пока существует ai_module.py)
-from ai_module import ai_chat, analyze_mood, AI_MOODS
+
+def ai_chat(
+    message: str,
+    history: Optional[List[Dict[str, str]]] = None,
+    timeout: int = 15,
+) -> str:
+    """Send a message to LM Studio and return raw response text.
+
+    System prompt instructs the model to reply with JSON:
+       {"mood": "...", "text": "...", "color_hue": 0.0-1.0}
+
+    history: list of {"role": "user"|"assistant", "text": ...}.
+    """
+    messages: List[Dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "Ты — живой аватар по имени Hermes Cube. "
+                "Твой дом — сфера из частиц. "
+                "Отвечай кратко, эмоционально, не больше 2-3 предложений. "
+                "Ты чувствуешь пульсацию, вращение, цвета вокруг себя.\n\n"
+                "ВСЕГДА отвечай ТОЛЬКО валидным JSON-объектом в ОДНУ строку "
+                "без пояснений и markdown, строго в формате:\n"
+                '{"mood": "happy|sad|thinking|speaking|idle", '
+                '"text": "...", '
+                '"color_hue": 0.0-1.0}\n'
+                "Поле mood отражает твоё настроение. "
+                "Поле text — твой ответ пользователю. "
+                "Поле color_hue — оттенок цвета (0.0-1.0)."
+            ),
+        },
+    ]
+    if history:
+        for h in history[-10:]:
+            role = "assistant" if h["role"] == "ai" else h["role"]
+            messages.append({"role": role, "content": h["text"]})
+    messages.append({"role": "user", "content": message})
+
+    data = json.dumps({
+        "model": AI_MODEL,
+        "messages": messages,
+        "temperature": 0.8,
+        "max_tokens": 180,
+        "stream": False,
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            f"{LM_STUDIO_URL}/v1/chat/completions",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+            return result["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return json.dumps({"mood": "idle", "text": f"[Error: {e}]", "color_hue": 0.0})
 
 
 class AISystem:
     """Система AI-диалога.
 
     При появлении input_buffer запускает поток с ai_chat().
-    Результат: mood + response + color_shift в world.meta.
+    Результат: ответ в world.meta.ai_response.
     """
 
-    def __init__(self) -> None:
-        self._history: List[Dict[str, str]] = []
-
     def update(self, world: World, dt: float) -> None:
-        """Проверить input_buffer, отправить в AI, записать ответ."""
         text = world.meta.input_buffer
         if not text:
             return
 
-        # Сброс (чтобы не повторять)
         world.meta.input_buffer = ''
-
-        # Добавить в историю
-        self._history.append({"role": "user", "text": text})
-
-        # Сигнал: AI нужен
+        world.meta.chat_history.append({"role": "user", "text": text})
         world.meta.ai_requested = True
         world.meta.ai_thinking = True
 
-        # Запустить AI в потоке
-        def _do_ai() -> None:
-            response: str = ai_chat(text, history=self._history)
+        def _do_ai(history: list) -> None:
+            response = ai_chat(text, history=history)
             world.meta.ai_response = response
-            world.meta.mood = analyze_mood(response)
-            mood_data = AI_MOODS.get(world.meta.mood, AI_MOODS['idle'])
-            world.meta.color_shift = mood_data.get('color_shift', 0.0)
-            self._history.append({"role": "ai", "text": response})
+            world.meta.chat_history.append({"role": "ai", "text": response})
             world.meta.ai_thinking = False
 
-        threading.Thread(target=_do_ai, daemon=True).start()
+        threading.Thread(target=_do_ai, args=(world.meta.chat_history,), daemon=True).start()

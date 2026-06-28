@@ -75,12 +75,16 @@ from core.render_graph import FrameContext, RenderGraph, GeometryPass, TrailPass
 # PixelGrid — framebuffer agent overlay
 from pixel_grid import PixelGrid, PixelGridWindow
 
-# AI-ядро (чат, настроения, буквы, ввод)
-from ai_module import AiCore, AI_MOODS
+# AI-ядро (для mood lookup)
+from core.ai_constants import AI_MOODS
 
 # Engine Blueprint v2 — Pipeline + World
 from core.pipeline import Pipeline, Stage, Schedule, build_default_pipeline
 from core.world import World
+
+# Engine v2 Systems — AI
+from core.systems.text_overlay import TextOverlaySystem
+from core.systems.input_window import InputWindowSystem
 
 # CubeAgents — pixel UI agents
 from cube_agents import AgentManager
@@ -1060,8 +1064,10 @@ class CubeApp:
         self._pixel_anim_active: bool = False
         self._pixel_anim_frame: int = 0
 
-        # AI-ядро
-        self.ai: AiCore = AiCore(self.root)
+        # AI-ядро (System-based, Engine v2)
+        self.text_overlay: TextOverlaySystem = TextOverlaySystem(self.root)
+        self.input_win: InputWindowSystem = InputWindowSystem(self.root)
+        self.input_win.connect_world(self.world)
         self._ai_color_shift: float = 0.0
         self._last_mood: str = 'idle'
 
@@ -1086,8 +1092,8 @@ class CubeApp:
         self.root.bind('q', lambda e: self._hide_window())
         self.root.bind('h', lambda e: self._hide_window())
         self.root.bind('s', lambda e: self.show_settings())
-        self.root.bind('c', lambda e: self.ai.toggle_input())
-        self.root.bind('C', lambda e: self.ai.toggle_input())
+        self.root.bind('c', lambda e: self.input_win.toggle())
+        self.root.bind('C', lambda e: self.input_win.toggle())
         self.root.bind('t', lambda e: self._toggle_draggable())
         self.root.bind('T', lambda e: self._toggle_draggable())
         self.root.bind('r', lambda e: self._toggle_trails())
@@ -1108,7 +1114,7 @@ class CubeApp:
         self.context_menu.add_command(
             label='↕ Переместить', command=self._toggle_draggable)
         self.context_menu.add_command(
-            label='💬 Ввод (C)', command=self.ai.toggle_input)
+            label='💬 Ввод (C)', command=self.input_win.toggle)
         self.context_menu.add_command(
             label='🌠 Трейлы', command=self._toggle_trails)
         self.context_menu.add_command(
@@ -1483,15 +1489,8 @@ class CubeApp:
             )
             self._show_hint = False
 
-        # ── AI update — spawn response letters from cube center ─────────
-        self.ai.update(FRAME_MS / 1000.0)
-        if (world.meta.ai_response
-                and not world.meta.ai_thinking
-                and len(self.ai.text_overlay.particles) == 0):
-            # Spawn letters at cube center (screen position)
-            response_text: str = world.meta.ai_response
-            self.ai.spawn_response(response_text, int(cx_s), int(cy_s))
-            world.meta.ai_response = ''  # clear to avoid re-spawn
+        # ── AI text overlay update (парЯщие буквы) ────────────────────
+        self.text_overlay.update(self.world, FRAME_MS / 1000.0)
 
         self.frame_count += 1
         self.root.after(FRAME_MS, self._render_frame)
@@ -1680,7 +1679,7 @@ class CubeApp:
             pass
 
         try:
-            self.ai.close()
+            self.text_overlay.close()
         except Exception:
             pass
 

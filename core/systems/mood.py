@@ -16,7 +16,7 @@ import json
 from typing import Any, Dict
 
 from core.world import World
-from ai_module import AI_MOODS
+from core.ai_constants import AI_MOODS
 
 
 class MoodSystem:

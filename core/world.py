@@ -78,6 +78,8 @@ class MetaState:
     ai_response: str = ''
     ai_thinking: bool = False
     ai_requested: bool = False
+    ai_ready: bool = False
+    chat_history: List[Dict[str, str]] = field(default_factory=list)
 
     # Input / Events
     events: deque = field(default_factory=deque)
