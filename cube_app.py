@@ -78,6 +78,10 @@ from pixel_grid import PixelGrid, PixelGridWindow
 # AI-ядро (чат, настроения, буквы, ввод)
 from ai_module import AiCore, AI_MOODS
 
+# Engine Blueprint v2 — Pipeline + World
+from core.pipeline import Pipeline, Stage, Schedule, build_default_pipeline
+from core.world import World
+
 # CubeAgents — pixel UI agents
 from cube_agents import AgentManager
 from particle_agents import ParticleAgentManager
@@ -1005,6 +1009,12 @@ class CubeApp:
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
+        # --- Engine Blueprint v2: World + Pipeline ---
+        self.world: World = World.create(self.config,
+                                          n_particles=self.config['particle_density'] ** 2 * 6)
+        self.pipeline: Pipeline = build_default_pipeline()
+        self._pipeline_integrated: bool = False  # toggle when ready
+
         # --- GPU/векторный рендерер облака точек ---
         # Заменяет по одной отрисовку N частиц (coords+itemconfig) на 1 картинку.
         self.renderer: PointCloudRenderer = PointCloudRenderer()
@@ -1379,21 +1389,34 @@ class CubeApp:
             self._show_mode_overlay(
                 mood_labels.get(current_mood, current_mood))
 
-        pts3d, pulse = self.engine.get_frame(elapsed, self.config)
+        # ── Pipeline: simulation → projection → color ─────────────────
+        # Заменяет engine.get_frame() + manual 3D→2D + color.
+        # Читает world.render после выполнения.
+        self.world.meta.t = elapsed
+        self.world.meta.w = w
+        self.world.meta.h = h
+        self.world.meta.cube_ox = self._cube_ox
+        self.world.meta.cube_oy = self._cube_oy
+        self.world.meta.color_shift = self._ai_color_shift
+        self.world.meta.config = self.config
+        self.world.render.trail_enabled = self._trail_enabled
 
-        # Project 3D → 2D
-        scale: float = (min(w, h) * self.config.get('cube_scale', 0.27)
-                        / (1.0 + self.config.get('pulse_amplitude', 0.12))
-                        * pulse)
-        cx_s: float = w / 2.0 + self._cube_ox
-        cy_s: float = h / 2.0 + self._cube_oy
+        self.pipeline.run(self.world, FRAME_MS / 1000.0)
 
-        px: NDArray[np.float64] = pts3d[:, 0] * scale + cx_s
-        py: NDArray[np.float64] = pts3d[:, 1] * scale + cy_s
-        pz: NDArray[np.float64] = pts3d[:, 2]
+        n = self.world.sim.active_count
+        px = self.world.render.projected_x[:n]
+        py = self.world.render.projected_y[:n]
+        pz = self.world.render.depth[:n]
+        rgb_arr = self.world.render.final_rgb[:n]
 
-        # ── Convex hull drag handle (follows cube shape in real-time) ──
-        if self._drag_handle is not None and self.draggable and len(px) >= 3:
+        # Depth sort (painter's algorithm)
+        order: NDArray[np.int64] = np.argsort(pz)
+        px, py, pz = px[order], py[order], pz[order]
+        if n > 0:
+            rgb_arr = rgb_arr[order]
+
+        # ── Convex hull drag handle ──────────────────────────────────
+        if self._drag_handle is not None and self.draggable and n >= 3:
             # Stack projected (x, y) and compute convex hull with padding
             xy: NDArray[np.float64] = np.column_stack((px, py))
             hull: NDArray[np.float64] = _convex_hull_2d(xy)
@@ -1407,160 +1430,20 @@ class CubeApp:
             # Keep handle hidden / zero-area when not in drag mode
             self.canvas.coords(self._drag_handle, 0, 0, 0, 0)
 
-        # Depth sort (painter's algorithm)
-        order: NDArray[np.int64] = np.argsort(pz)
-        px, py, pz = px[order], py[order], pz[order]
-
-        # Per-particle colour with depth shading
-        depth_factor: float = 0.6 + 0.4 * (pz + 1.0) / 2.0
-        r_p: NDArray[np.float64]
-        g_p: NDArray[np.float64]
-        b_p: NDArray[np.float64]
-        r_p = np.clip(self.engine.r0[order] * depth_factor, 0, 255)
-        g_p = np.clip(self.engine.g0[order] * depth_factor, 0, 255)
-        b_p = np.clip(self.engine.b0[order] * depth_factor, 0, 255)
-
-        # ── AI mood HSV color shift (fully vectorized numpy) ─────────
-        shift: float = self._ai_color_shift
-        if shift > 0.01:
-            # Normalize to [0, 1]
-            r = r_p / 255.0
-            g = g_p / 255.0
-            b = b_p / 255.0
-
-            # RGB → HSV (vectorized)
-            mx = np.maximum(np.maximum(r, g), b)
-            mn = np.minimum(np.minimum(r, g), b)
-            delta = mx - mn
-
-            h = np.zeros_like(r)
-            mask = delta > 1e-6
-            rm = mask & (mx == r)
-            gm = mask & (mx == g)
-            bm = mask & (mx == b)
-            h[rm] = ((g[rm] - b[rm]) / delta[rm]) % 6.0
-            h[gm] = ((b[gm] - r[gm]) / delta[gm]) + 2.0
-            h[bm] = ((r[bm] - g[bm]) / delta[bm]) + 4.0
-            h = h / 6.0
-
-            s = np.zeros_like(r)
-            s[mask] = delta[mask] / mx[mask]
-            v = mx
-
-            # Apply hue shift (wrap around)
-            h = (h + shift) % 1.0
-
-            # HSV → RGB (vectorized)
-            h6 = h * 6.0
-            hi = np.floor(h6).astype(np.int32)
-            f = h6 - hi.astype(np.float64)
-            p = v * (1.0 - s)
-            q = v * (1.0 - s * f)
-            t = v * (1.0 - s * (1.0 - f))
-
-            r_p = np.clip(np.select(
-                [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
-                [v, q, p, p, t, v]
-            ) * 255.0, 0, 255)
-            g_p = np.clip(np.select(
-                [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
-                [t, v, v, q, p, p]
-            ) * 255.0, 0, 255)
-            b_p = np.clip(np.select(
-                [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
-                [p, p, t, v, v, q]
-            ) * 255.0, 0, 255)
-
+        # ── Render Graph — data-driven pipeline ────────────────────────
         cell: int = max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE)))
-        half: int = cell // 2
         symbol: str = self.config.get('symbol', 'square')
-
-        # Symbol-specific size adjustment
-        cell_actual: int = cell
-        half_actual: int = half
-        if symbol == 'dot':
-            cell_actual = max(MIN_CELL_SIZE, cell // 2)
-            half_actual = cell_actual // 2
-
-        count: int = len(px)
-
-        # ── Trails — light trail effect ───────────────────────────────────
-        # Push current frame to history (before drawing trails)
-        if self._trail_enabled:
-            self._trail_history.append({
-                'px': px.copy(),
-                'py': py.copy(),
-                'r': r_p.copy(),
-                'g': g_p.copy(),
-                'b': b_p.copy(),
-                'cell': cell_actual,
-                'half': half_actual,
-                'count': count,
-            })
-
-        # Рисуем трейлы одним векторным слоем в общий буфер рендерера
-        # (раньше: (trail_len-1)*count отдельных Canvas-айтемов, ≈26000 при
-        # density=20 → система висла). Теперь: cell=1 (одиночные пиксели),
-        # это ~36× быстрее, а шлейф выглядит даже чище.
-        trail_len: int = len(self._trail_history)
-        if trail_len > 1 and self._trail_enabled:
-            # Соберём все пиксели трейлов в плоские массивы, с учётом fade.
-            chunks_x: List[NDArray[np.float64]] = []
-            chunks_y: List[NDArray[np.float64]] = []
-            chunks_rgb: List[NDArray[np.uint8]] = []
-            for age in range(1, trail_len):
-                frame_data = self._trail_history[trail_len - 1 - age]
-                fade: float = 1.0 - (age / self._trail_history.maxlen)
-                if fade < 0.05:
-                    continue
-                fc = frame_data['count']
-                if fc == 0:
-                    continue
-                fade_arr: NDArray[np.float64] = np.asarray(fade, dtype=np.float64)
-                col = np.stack([
-                    frame_data['r'] * fade_arr,
-                    frame_data['g'] * fade_arr,
-                    frame_data['b'] * fade_arr,
-                ], axis=1).clip(0, 255).astype(np.uint8)
-                chunks_x.append(frame_data['px'])
-                chunks_y.append(frame_data['py'])
-                chunks_rgb.append(col)
-            if chunks_x:
-                all_tx = np.concatenate(chunks_x)
-                all_ty = np.concatenate(chunks_y)
-                all_trgb = np.concatenate(chunks_rgb)
-                self._trail_layer = (all_tx, all_ty, all_trgb)
-        elif not self._trail_enabled:
-            # Снять шлейф: очистить историю и флаг слоя
-            self._trail_history.clear()
-            self._trail_layer = None
+        cell_actual: int = cell if symbol != 'dot' else max(MIN_CELL_SIZE, cell // 2)
 
         char_mode: str = self.config.get('char_mode', 'dots')
         symbol_set_name: str = self.config.get('symbol_set', 'default')
         symbols_set: List[str] = SYMBOL_SETS.get(symbol_set_name, SYMBOL_SETS['default'])
-
-        # Rebuild particle items if symbol or char_mode changed
-        mode_changed: bool = (
-            self._current_symbol != symbol
-            or (char_mode != 'dots' and not self._using_chars)
-            or (char_mode == 'dots' and self._using_chars)
-        )
-        if mode_changed:
-            for item in self.particle_items:
-                self.canvas.delete(item)
-            self.particle_items.clear()
-            self._current_symbol = symbol
-            self._using_chars = (char_mode != 'dots')
-
-        # ── Render Graph — data-driven pipeline ────────────────────────
-        rgb_arr: NDArray[np.uint8] = np.column_stack(
-            (r_p, g_p, b_p),
-        ).astype(np.uint8)
+        self._using_chars = (char_mode != 'dots')
 
         char_list: Optional[List[str]] = None
-        if self._using_chars:
+        if self._using_chars and n > 0:
             char_list = [
-                symbols_set[i % len(symbols_set)] for i in range(count)
+                symbols_set[i % len(symbols_set)] for i in range(n)
             ]
 
         ctx = FrameContext(
@@ -1568,8 +1451,8 @@ class CubeApp:
             rgb=rgb_arr,
             cell=cell_actual,
             symbol=symbol,
-            trail_enabled=self._trail_enabled,
-            trail_layer=self._trail_layer,
+            trail_enabled=self.world.render.trail_enabled,
+            trail_layer=self.world.render.trail_layer,
             using_chars=self._using_chars,
             char_list=char_list,
             symbols_set=symbols_set,
@@ -1582,7 +1465,6 @@ class CubeApp:
             self.renderer.blit(rgba_buf, bbox[0], bbox[1])
         else:
             self.renderer.hide()
-
         # Startup hint overlay
         if self._show_hint:
             hint_id = self.canvas.create_text(
