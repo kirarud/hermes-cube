@@ -195,12 +195,13 @@ class RenderGraph:
     def execute(
         self,
         ctx: FrameContext,
+        renderer: Optional[Any] = None,
     ) -> Tuple[Optional[NDArray[np.uint8]], Optional[Tuple[int, int, int, int]]]:
         """Выполнить все пассы → готовый RGBA-буфер + bbox.
 
         Шаги:
           1. Собрать информацию о слоях для bbox
-          2. Выделить RGBA-буфер
+          2. Выделить RGBA-буфер (из пула renderer, если передан)
           3. Очистить
           4. Запустить пассы по порядку
 
@@ -225,11 +226,13 @@ class RenderGraph:
 
         x0, y0, x1, y1 = bbox
 
-        # --- Выделение буфера ---
-        buf: NDArray[np.uint8] = PointCloudRenderer.allocate_rgba(x0, y0, x1, y1)
-
-        # --- Очистка ---
-        buf[:] = (0, 0, 0, 0)
+        # --- Выделение буфера (из пула, если есть renderer) ---
+        w = x1 - x0
+        h = y1 - y0
+        if renderer is not None and hasattr(renderer, 'get_buffer'):
+            buf = renderer.get_buffer(w, h)
+        else:
+            buf = PointCloudRenderer.allocate_rgba(x0, y0, x1, y1)
 
         # --- Выполнение пассов ---
         for p in self.passes:
