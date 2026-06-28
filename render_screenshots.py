@@ -113,7 +113,7 @@ def grid_render(
 # GENERATE
 # ═══════════════════════════════════════════════════════════════════════
 
-SHAPES = ['cube', 'sphere', 'torus', 'dna', 'metaball']
+SHAPES = ['cube', 'sphere', 'torus', 'dna', 'metaball', 'spiral']
 ANIMS = ['off', 'wave', 'breathe', 'orbit', 'geyser']
 CHARS = ['dots', 'symbols', 'words', 'glow']
 MORTH_TARGETS = ['sphere', 'torus', 'dna', 'metaball']

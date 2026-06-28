@@ -49,6 +49,7 @@ def _rebuild(world: World, density: int) -> None:
         'torus': _gen_torus(pts),
         'dna': _gen_dna(pts),
         'metaball': _gen_metaball(pts),
+        'spiral': _gen_spiral(pts),
     }
 
 
@@ -112,4 +113,22 @@ def _gen_metaball(points: NDArray[np.float64]) -> NDArray[np.float64]:
     result[:, 0] *= scale
     result[:, 1] *= scale
     result[:, 2] *= scale
+    return result
+
+
+def _gen_spiral(points: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Золотая логарифмическая спираль вдоль оси Z от 0 до 1.
+
+    Частицы распределяются вдоль спирали, радиус уменьшается
+    экспоненциально к центру (Z=0.5), Z переопределяется как
+    прогрессия от 0 до 1.
+    """
+    n = len(points)
+    t = np.linspace(0.0, 1.0, n)
+    angle = t * np.pi * 16
+    r = np.exp(-t * 2.2)
+    result = np.zeros((n, 3), dtype=np.float64)
+    result[:, 0] = np.cos(angle) * r * 0.9
+    result[:, 1] = np.sin(angle) * r * 0.9
+    result[:, 2] = t
     return result

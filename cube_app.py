@@ -159,7 +159,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     'cell_size': 6,
     'cube_scale': 0.27,
     'symbol': 'square',         # 'square' | 'circle' | 'dot'
-    'shape_preset': 'cube',     # 'cube' | 'sphere' | 'torus' | 'dna' | 'metaball'
+    'shape_preset': 'cube',     # 'cube' | 'sphere' | 'torus' | 'dna' | 'metaball' | 'spiral'
     'morph_progress': 0.0,      # 0 = cube, 1 = target shape
     'particle_mode': 'off',     # 'off' | 'wave' | 'breathe' | 'orbit' | 'geyser'
     'wave_speed': 1.5,          # speed multiplier for particle animation
@@ -170,6 +170,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Symbol / char mode
     'char_mode': 'dots',          # 'dots' | 'symbols' | 'words' | 'glow'
     'symbol_set': 'default',      # from SYMBOL_SETS keys
+    # Color mode
+    'color_mode': 'default',      # 'default' | 'z_layers'
 }
 
 #: Predefined colour palette for agent sprites
@@ -754,7 +756,7 @@ class SettingsWindow:
 
         row = self._add_section(parent, 'Форма', row)
         row = self._add_dropdown(parent, 'shape_preset', 'Пресет формы',
-                                 ['cube', 'sphere', 'torus', 'dna', 'metaball'], row)
+                                 ['cube', 'sphere', 'torus', 'dna', 'metaball', 'spiral'], row)
         row = self._add_slider(parent, 'morph_progress', 'Морфинг (куб → форма)', 0.0, 1.0, row)
 
         row = self._add_section(parent, 'Анимация частиц', row)
@@ -769,6 +771,8 @@ class SettingsWindow:
 
         row = self._add_section(parent, 'Стиль', row)
         row = self._add_dropdown(parent, 'symbol', 'Форма частиц', ['square', 'circle', 'dot'], row)
+        row = self._add_dropdown(parent, 'color_mode', 'Режим цвета',
+                                 ['default', 'z_layers'], row)
         row = self._add_dropdown(parent, 'char_mode', 'Режим символов',
                                  ['dots', 'symbols', 'words', 'glow'], row)
         row = self._add_dropdown(parent, 'symbol_set', 'Набор символов',
