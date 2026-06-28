@@ -1,8 +1,9 @@
-"""systems/animation.py — Анимации частиц (смещения от базовой позиции).
+"""systems/animation.py — Анимации частиц.
 
-5 режимов: off, wave, breathe, orbit, geyser.
-Применяется ПОСЛЕ morph, ДО rotation.
-Каждая функция — numpy-векторизованное смещение positions × t × params.
+Читает: sim.morphed
+Пишет:  sim.animated
+
+Никаких copy() — animated свой отдельный буфер.
 """
 
 from __future__ import annotations
@@ -14,83 +15,85 @@ from core.world import World
 
 
 def update(world: World, dt: float) -> None:
-    """Применить анимацию частиц к sim.position."""
     cfg = world.meta.config
     anim_name: str = cfg.get('particle_mode', 'off')
+    n = world.sim.active_count
+    if n == 0:
+        return
+
+    inp = world.sim.morphed[:n]
+    out = world.sim.animated[:n]
+
     if anim_name == 'off':
+        out[:] = inp
         return
 
     speed: float = cfg.get('wave_speed', 1.5)
     amp: float = cfg.get('wave_amp', 0.12)
     t: float = world.meta.t
 
-    n = world.sim.active_count
-    if n == 0:
-        return
-
-    pts = world.sim.position[:n]
-
     if anim_name == 'wave':
-        world.sim.position[:n] = _animate_wave(pts, t, speed, amp)
+        _apply_wave(inp, out, t, speed, amp)
     elif anim_name == 'breathe':
-        world.sim.position[:n] = _animate_breathe(pts, t, speed, amp)
+        _apply_breathe(inp, out, t, speed, amp)
     elif anim_name == 'orbit':
-        world.sim.position[:n] = _animate_orbit(pts, t, speed, amp)
+        _apply_orbit(inp, out, t, speed, amp)
     elif anim_name == 'geyser':
-        world.sim.position[:n] = _animate_geyser(pts, t, speed, amp)
+        _apply_geyser(inp, out, t, speed, amp)
+    else:
+        out[:] = inp
 
 
-def _animate_wave(points: NDArray[np.float64], t: float,
-                  speed: float, amp: float) -> NDArray[np.float64]:
-    """3D Lissajous wave field."""
+def _apply_wave(inp: NDArray[np.float64], out: NDArray[np.float64],
+                t: float, speed: float, amp: float) -> None:
     if amp < 0.001:
-        return points.copy()
-    result = points.copy()
-    result[:, 0] += (np.sin(points[:, 1] * 3.0 + t * speed * 2.5) * amp * 0.5
-                     + np.cos(points[:, 2] * 2.0 + t * speed * 1.3) * amp * 0.3)
-    result[:, 1] += (np.cos(points[:, 0] * 2.5 + t * speed * 1.7) * amp * 0.7
-                     + np.sin(points[:, 0] * 3.0 + t * speed * 1.1) * amp * 0.4)
-    result[:, 2] += (np.sin(points[:, 2] * 3.2 + t * speed * 2.0) * amp * 0.5
-                     + np.cos(points[:, 1] * 2.8 + t * speed * 1.9) * amp * 0.3)
-    return result
+        out[:] = inp
+        return
+    out[:] = inp
+    out[:, 0] += (np.sin(inp[:, 1] * 3.0 + t * speed * 2.5) * amp * 0.5
+                  + np.cos(inp[:, 2] * 2.0 + t * speed * 1.3) * amp * 0.3)
+    out[:, 1] += (np.cos(inp[:, 0] * 2.5 + t * speed * 1.7) * amp * 0.7
+                  + np.sin(inp[:, 0] * 3.0 + t * speed * 1.1) * amp * 0.4)
+    out[:, 2] += (np.sin(inp[:, 2] * 3.2 + t * speed * 2.0) * amp * 0.5
+                  + np.cos(inp[:, 1] * 2.8 + t * speed * 1.9) * amp * 0.3)
 
 
-def _animate_breathe(points: NDArray[np.float64], t: float,
-                     speed: float, amp: float) -> NDArray[np.float64]:
+def _apply_breathe(inp: NDArray[np.float64], out: NDArray[np.float64],
+                   t: float, speed: float, amp: float) -> None:
     if amp < 0.001:
-        return points.copy()
-    phase = points[:, 0] * 1.7 + points[:, 1] * 2.3 + points[:, 2] * 1.1
-    result = points.copy()
-    result[:, 0] += np.sin(phase + t * speed * 1.5) * amp
-    result[:, 1] += np.cos(phase * 1.3 + t * speed * 1.1) * amp
-    result[:, 2] += np.sin(phase * 0.7 + t * speed * 1.8) * amp
-    return result
+        out[:] = inp
+        return
+    phase = inp[:, 0] * 1.7 + inp[:, 1] * 2.3 + inp[:, 2] * 1.1
+    out[:] = inp
+    out[:, 0] += np.sin(phase + t * speed * 1.5) * amp
+    out[:, 1] += np.cos(phase * 1.3 + t * speed * 1.1) * amp
+    out[:, 2] += np.sin(phase * 0.7 + t * speed * 1.8) * amp
 
 
-def _animate_orbit(points: NDArray[np.float64], t: float,
-                   speed: float, amp: float) -> NDArray[np.float64]:
+def _apply_orbit(inp: NDArray[np.float64], out: NDArray[np.float64],
+                 t: float, speed: float, amp: float) -> None:
     if amp < 0.001:
-        return points.copy()
-    phase = points[:, 0] * 2.7 + points[:, 1] * 3.1 + points[:, 2] * 1.9
-    result = points.copy()
-    result[:, 0] += (np.cos(phase + t * speed) * amp
-                     + np.sin(phase * 0.5 + t * speed * 0.9) * amp * 0.4)
-    result[:, 1] += np.sin(phase * 1.3 + t * speed * 0.7) * amp
-    result[:, 2] += (np.cos(phase * 0.7 + t * speed * 1.4) * amp
-                     + np.cos(phase * 0.9 + t * speed * 1.1) * amp * 0.4)
-    return result
+        out[:] = inp
+        return
+    phase = inp[:, 0] * 2.7 + inp[:, 1] * 3.1 + inp[:, 2] * 1.9
+    out[:] = inp
+    out[:, 0] += (np.cos(phase + t * speed) * amp
+                  + np.sin(phase * 0.5 + t * speed * 0.9) * amp * 0.4)
+    out[:, 1] += np.sin(phase * 1.3 + t * speed * 0.7) * amp
+    out[:, 2] += (np.cos(phase * 0.7 + t * speed * 1.4) * amp
+                  + np.cos(phase * 0.9 + t * speed * 1.1) * amp * 0.4)
 
 
-def _animate_geyser(points: NDArray[np.float64], t: float,
-                    speed: float, amp: float) -> NDArray[np.float64]:
+def _apply_geyser(inp: NDArray[np.float64], out: NDArray[np.float64],
+                  t: float, speed: float, amp: float) -> None:
     if amp < 0.001:
-        return points.copy()
-    height = (points[:, 1] + 1.0) * 0.5
-    spray = np.sin(t * speed * 2.5 + points[:, 0] * 4.0 + points[:, 2] * 4.0)
+        out[:] = inp
+        return
+    height = (inp[:, 1] + 1.0) * 0.5
+    spray = np.sin(t * speed * 2.5 + inp[:, 0] * 4.0 + inp[:, 2] * 4.0)
     spread = spray * amp * (0.3 + height * 0.7)
-    result = points.copy()
-    result[:, 0] += spread
-    result[:, 2] += spread
-    wobble = np.sin(t * speed * 3.0 + points[:, 0] * 5.0 + points[:, 2] * 5.0)
-    result[:, 1] += wobble * amp * 0.25 * height
-    return result
+    out[:] = inp
+    out[:, 0] += spread
+    out[:, 2] += spread
+    wobble = np.sin(t * speed * 3.0 + inp[:, 0] * 5.0 + inp[:, 2] * 5.0)
+    out[:, 1] += wobble * amp * 0.25 * height

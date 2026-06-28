@@ -1,12 +1,7 @@
-"""systems/color.py — Цвет частиц с depth shading и HSV-сдвигом.
+"""systems/color.py — Цвет частиц.
 
-Читает:
-  sim.color — базовые цвета (r0, g0, b0)
-  render.depth — z-глубина
-  meta.color_shift — AI mood HSV shift
-
-Пишет:
-  render.final_rgb — (N, 3) uint8 готовый к отрисовке
+Читает: sim.color (базовые цвета), sim.world_position (для глубины)
+Пишет:  render.final_rgb
 """
 
 from __future__ import annotations
@@ -18,7 +13,6 @@ from core.world import World
 
 
 def update(world: World, dt: float) -> None:
-    """Вычислить финальные цвета: depth_factor × HSV shift."""
     n = world.sim.active_count
     if n == 0:
         world.render.final_rgb = np.array([], dtype=np.uint8).reshape(0, 3)
@@ -27,17 +21,15 @@ def update(world: World, dt: float) -> None:
     r0 = world.sim.color[:n, 0]
     g0 = world.sim.color[:n, 1]
     b0 = world.sim.color[:n, 2]
-    pz = world.render.depth[:n]
+    pz = world.sim.world_position[:n, 2]
 
-    # Depth factor: 0.6 + 0.4 * normalised_z
-    depth_factor: NDArray[np.float64] = 0.6 + 0.4 * (pz + 1.0) / 2.0
+    depth_factor = 0.6 + 0.4 * (pz + 1.0) / 2.0
 
-    r_p: NDArray[np.float64] = np.clip(r0 * depth_factor, 0, 255)
-    g_p: NDArray[np.float64] = np.clip(g0 * depth_factor, 0, 255)
-    b_p: NDArray[np.float64] = np.clip(b0 * depth_factor, 0, 255)
+    r_p = np.clip(r0 * depth_factor, 0, 255)
+    g_p = np.clip(g0 * depth_factor, 0, 255)
+    b_p = np.clip(b0 * depth_factor, 0, 255)
 
-    # HSV shift от AI mood
-    shift: float = world.meta.color_shift
+    shift = world.meta.color_shift
     if shift > 0.01:
         r_p, g_p, b_p = _apply_hsv_shift(r_p, g_p, b_p, shift)
 
@@ -46,15 +38,8 @@ def update(world: World, dt: float) -> None:
     ).astype(np.uint8)
 
 
-def _apply_hsv_shift(
-    r: NDArray[np.float64], g: NDArray[np.float64], b: NDArray[np.float64],
-    shift: float,
-) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    """Векторизованный RGB→HSV→сдвиг→RGB (без colorsys). Копия из cube_app.py."""
-    rn = r / 255.0
-    gn = g / 255.0
-    bn = b / 255.0
-
+def _apply_hsv_shift(r, g, b, shift):
+    rn, gn, bn = r / 255.0, g / 255.0, b / 255.0
     mx = np.maximum(np.maximum(rn, gn), bn)
     mn = np.minimum(np.minimum(rn, gn), bn)
     delta = mx - mn
@@ -72,7 +57,6 @@ def _apply_hsv_shift(
     s = np.zeros_like(rn)
     s[mask] = delta[mask] / mx[mask]
     v = mx
-
     h = (h + shift) % 1.0
 
     h6 = h * 6.0
@@ -84,15 +68,11 @@ def _apply_hsv_shift(
 
     r_out = np.clip(np.select(
         [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
-        [v, q, p, p, t, v]
-    ) * 255.0, 0, 255)
+        [v, q, p, p, t, v]) * 255.0, 0, 255)
     g_out = np.clip(np.select(
         [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
-        [t, v, v, q, p, p]
-    ) * 255.0, 0, 255)
+        [t, v, v, q, p, p]) * 255.0, 0, 255)
     b_out = np.clip(np.select(
         [hi == 0, hi == 1, hi == 2, hi == 3, hi == 4, hi == 5],
-        [p, p, t, v, v, q]
-    ) * 255.0, 0, 255)
-
-    return (r_out, g_out, b_out)
+        [p, p, t, v, v, q]) * 255.0, 0, 255)
+    return r_out, g_out, b_out

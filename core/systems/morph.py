@@ -1,7 +1,9 @@
-"""systems/morph.py — Плавный морфинг между формами.
+"""systems/morph.py — Морфинг: lerp(base_position → target shape).
 
-Берёт кубическую сетку из world.sim.position и интерполирует
-к целевой форме из shape_cache.
+Читает: sim.base_position
+Пишет:  sim.morphed
+
+Никогда не мутирует base_position.
 """
 
 from __future__ import annotations
@@ -12,25 +14,24 @@ from core.world import World
 
 
 def update(world: World, dt: float) -> None:
-    """Применить морфинг: lerp(cube, target, morph_progress).
-
-    Если morph_progress == 0.0 — ничего не делает (чистый куб).
-    Если morph_progress == 1.0 — чистая целевая форма.
-    """
     cfg = world.meta.config
     morph: float = cfg.get('morph_progress', 0.0)
+    n = world.sim.active_count
+    if n == 0:
+        return
+
     if morph <= 0.0:
+        # Копируем base → morphed (без морфинга)
+        world.sim.morphed[:n] = world.sim.base_position[:n]
         return
 
     shape_name: str = cfg.get('shape_preset', 'cube')
     target = world.sim.shape_cache.get(shape_name)
     if target is None:
+        world.sim.morphed[:n] = world.sim.base_position[:n]
         return
 
-    n = world.sim.active_count
-    if n == 0:
-        return
-
-    pts = world.sim.position[:n]
-    target_pts = target[:n]
-    world.sim.position[:n] = pts * (1.0 - morph) + target_pts * morph
+    base = world.sim.base_position[:n]
+    tgt = target[:n]
+    # lerp: base * (1-t) + target * t
+    world.sim.morphed[:n] = base * (1.0 - morph) + tgt * morph

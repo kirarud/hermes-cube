@@ -1,20 +1,12 @@
 """systems/grid_generator.py — Генерация сетки частиц куба.
 
-Заменяет CubeEngine._generate_cube_grid() и _refresh_shape_cache().
-
-Читает:
-  meta.config — particle_density, shape_preset
-
-Пишет:
-  sim.position — (N, 3) сетка на 6 гранях куба
-  sim.color — (N, 3) RGB-градиент по позиции
-  sim.shape_cache — предвычисленные формы (sphere, torus, dna, metaball)
-  sim.active_count
+Пишет в sim.base_position — исходная сетка на 6 гранях [-1, 1].
+Копирует во все downstream буферы (morphed, animated, world_position).
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,32 +18,31 @@ def update(world: World, dt: float) -> None:
     """Перестроить сетку если density изменился."""
     cfg = world.meta.config
     new_density: int = int(cfg.get('particle_density', 12))
-    current_n = world.sim.active_count
     expected_n = new_density * new_density * 6
 
-    if current_n == expected_n and world.sim.shape_cache:
-        return  # ничего не изменилось
+    if world.sim.active_count == expected_n and world.sim.shape_cache:
+        return
 
     _rebuild(world, new_density)
 
 
 def _rebuild(world: World, density: int) -> None:
-    """Сгенерировать новую сетку и цвета."""
+    """Сгенерировать новую сетку, цвета, shape_cache, копировать во все буферы."""
     pts = _generate_cube_grid(density)
     n = len(pts)
 
-    # Обновляем world
     world.sim.active_count = n
-    world.sim.position[:n] = pts
+    world.sim.base_position[:n] = pts
+    world.sim.morphed[:n] = pts
+    world.sim.animated[:n] = pts
+    world.sim.world_position[:n] = pts
     world.sim.color[:n, 0] = ((pts[:, 0] + 1.0) / 2.0 * 255.0)
     world.sim.color[:n, 1] = ((pts[:, 1] + 1.0) / 2.0 * 255.0)
     world.sim.color[:n, 2] = ((pts[:, 2] + 1.0) / 2.0 * 255.0)
 
-    # Mask dead particles (beyond n)
     world.sim.alive[:] = False
     world.sim.alive[:n] = True
 
-    # Shape cache
     world.sim.shape_cache = {
         'cube': pts.copy(),
         'sphere': _gen_sphere(pts),
@@ -62,7 +53,6 @@ def _rebuild(world: World, density: int) -> None:
 
 
 def _generate_cube_grid(n: int) -> NDArray[np.float64]:
-    """(N*N*6, 3) evenly-spaced points on unit cube [-1, 1] faces."""
     pts: List[Tuple[float, float, float]] = []
     u = np.linspace(-1.0, 1.0, n)
     v = np.linspace(-1.0, 1.0, n)

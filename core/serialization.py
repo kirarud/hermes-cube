@@ -35,9 +35,8 @@ def serialize_world(world: World) -> bytes:
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         # Simulation state
         n = world.sim.active_count
-        _add_npy(zf, 'sim/position.npy', world.sim.position[:n])
+        _add_npy(zf, 'sim/position.npy', world.sim.world_position[:n])
         _add_npy(zf, 'sim/color.npy', world.sim.color[:n])
-        _add_npy(zf, 'sim/velocity.npy', world.sim.velocity[:n])
 
         # Meta
         meta = {
@@ -59,7 +58,6 @@ def deserialize_world(data: bytes, pool_size: int = 4096) -> Optional[World]:
         with zipfile.ZipFile(buf, 'r') as zf:
             pos = _read_npy(zf, 'sim/position.npy')
             col = _read_npy(zf, 'sim/color.npy')
-            vel = _read_npy(zf, 'sim/velocity.npy')
             meta = json.loads(zf.read('meta.json'))
     except Exception:
         return None
@@ -68,9 +66,8 @@ def deserialize_world(data: bytes, pool_size: int = 4096) -> Optional[World]:
     config = meta.get('config', {})
 
     world = World.create(config, n_particles=n, pool_size=pool_size)
-    world.sim.position[:n] = pos
+    world.sim.world_position[:n] = pos
     world.sim.color[:n] = col
-    world.sim.velocity[:n] = vel
     world.meta.t = meta.get('t', 0.0)
     world.meta.frame = meta.get('frame', 0)
     world.meta.mood = meta.get('mood', 'idle')

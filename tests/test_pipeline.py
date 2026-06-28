@@ -63,7 +63,7 @@ def test_pipeline_identity() -> None:
     pipeline.run(w2, 0.042)
 
     n = w1.sim.active_count
-    diff_pos = np.max(np.abs(w1.sim.position[:n] - w2.sim.position[:n]))
+    diff_pos = np.max(np.abs(w1.sim.world_position[:n] - w2.sim.world_position[:n]))
     diff_rgb = np.max(np.abs(
         w1.render.final_rgb[:n].astype(np.float64)
         - w2.render.final_rgb[:n].astype(np.float64)

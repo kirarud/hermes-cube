@@ -5,9 +5,18 @@
 состояние отдельно — только World.
 
 Три зоны:
-  sim    — simulation state (физика, положение, цвет)
+  sim    — simulation state (положение, цвет, форма)
   render — presentation state (готово к отрисовке)
   meta   — management (конфиг, время, AI, события)
+
+Stage-буферы (sim):
+  Каждая стадия конвейера пишет в свой буфер, читает из предыдущего.
+  Это исключает copy(), side-effects и ошибки порядка.
+
+  base_position  ← GridGenerator (неизменна после генерации)
+  morphed        ← Morph (lerp base→target)
+  animated       ← Animation (смещение от morphed)
+  world_position ← Rotation (поворот → финальная 3D-позиция)
 """
 
 from __future__ import annotations
@@ -22,18 +31,24 @@ from numpy.typing import NDArray
 
 @dataclass
 class SimState:
-    """Симуляционное состояние — меняется системами каждый кадр.
+    """Симуляционное состояние — stage-буферы конвейера.
 
-    Все массивы — плоские (N, 3) или (N,), индексированные по entity_id.
+    Все массивы — плоские (N, 3), индексированные по entity_id.
     N — активное количество частиц (<= pool_size).
     """
-    position: NDArray[np.float64]   # (N, 3) — 3D-координаты [-1, 1]
-    velocity: NDArray[np.float64]   # (N, 3) — скорости для анимаций
-    color: NDArray[np.float64]      # (N, 3) — базовые цвета r0/g0/b0 (0-255)
+
+    # ── Stage buffers (конвейер: base → morphed → animated → world) ──
+    base_position: NDArray[np.float64]   # (N, 3) — исходная сетка куба
+    morphed: NDArray[np.float64]         # (N, 3) — после морфинга
+    animated: NDArray[np.float64]        # (N, 3) — после анимации
+    world_position: NDArray[np.float64]   # (N, 3) — после поворота, финал 3D
+
+    # Цвет (базовый, не зависит от стадии)
+    color: NDArray[np.float64]           # (N, 3) — r0/g0/b0 (0-255)
 
     # Мета-данные частиц
-    alive: NDArray[np.bool_]        # (N,) — active/dormant
-    symbol_idx: NDArray[np.int32]   # (N,) — индекс символа в symbol_set
+    alive: NDArray[np.bool_]             # (N,) — active/dormant
+    symbol_idx: NDArray[np.int32]        # (N,) — индекс символа в symbol_set
 
     # Ресурсы (не привязаны к entity)
     shape_cache: Dict[str, NDArray[np.float64]] = field(default_factory=dict)
@@ -41,9 +56,6 @@ class SimState:
     # Pool management
     pool_size: int = 4096
     active_count: int = 0
-
-    # Shape generators
-    shape_cache: Dict[str, NDArray[np.float64]] = field(default_factory=dict)
 
 
 @dataclass
@@ -68,9 +80,9 @@ class RenderState:
 class MetaState:
     """Управляющее состояние — конфиг, время, AI, события."""
     config: Dict[str, Any] = field(default_factory=dict)
-    t: float = 0.0           # глобальное время (сек)
-    dt: float = 0.0          # шаг кадра (сек)
-    frame: int = 0           # номер кадра
+    t: float = 0.0
+    dt: float = 0.0
+    frame: int = 0
 
     # AI
     mood: str = 'idle'
@@ -90,7 +102,6 @@ class MetaState:
     cube_oy: float = 0.0
     draggable: bool = False
 
-    # Размеры окна
     w: int = 800
     h: int = 600
 
@@ -109,17 +120,14 @@ class World:
     @classmethod
     def create(cls, config: Dict[str, Any], n_particles: int = 864,
                pool_size: int = 4096) -> World:
-        """Создать World с инициализированными массивами.
-
-        Args:
-            config: Начальная конфигурация (из load_config()).
-            n_particles: Начальное количество частиц.
-            pool_size: Максимальный размер пула (для spawner-ов).
-        """
+        """Создать World с инициализированными массивами."""
+        z = np.zeros((n_particles, 3), dtype=np.float64)
         sim = SimState(
-            position=np.zeros((n_particles, 3), dtype=np.float64),
-            velocity=np.zeros((n_particles, 3), dtype=np.float64),
-            color=np.zeros((n_particles, 3), dtype=np.float64),
+            base_position=z.copy(),
+            morphed=z.copy(),
+            animated=z.copy(),
+            world_position=z.copy(),
+            color=z.copy(),
             alive=np.ones(n_particles, dtype=np.bool_),
             symbol_idx=np.zeros(n_particles, dtype=np.int32),
             pool_size=pool_size,
