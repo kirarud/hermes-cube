@@ -66,6 +66,9 @@ import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageDraw
 
+# Renderer — единый слой отрисовки облака точек (numpy-буфер → 1 картинка)
+from renderer import PointCloudRenderer
+
 # PixelGrid — framebuffer agent overlay
 from pixel_grid import PixelGrid, PixelGridWindow
 
@@ -999,6 +1002,11 @@ class CubeApp:
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
+        # --- GPU/векторный рендерер облака точек ---
+        # Заменяет по одной отрисовку N частиц (coords+itemconfig) на 1 картинку.
+        self.renderer: PointCloudRenderer = PointCloudRenderer()
+        self.renderer.attach(self.canvas)
+
         # ─── Fullscreen overlay ─────────────────────────────────────
         # Stretch to whole screen so cube never clips regardless of
         # scale, morph, animation, or pulse.
@@ -1042,7 +1050,10 @@ class CubeApp:
         # Trails
         self._trail_enabled: bool = False
         self._trail_history: Deque[dict] = deque(maxlen=12)
-        self._trail_items: List[int] = []
+        # Слой трейлов для рендерера: (tx, ty, trgb) или None.
+        # Рисуется ПОД кубом как одиночные пиксели (cell=1).
+        self._trail_layer: Optional[Tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.uint8]]] = None
+        self._trail_items: List[int] = []  # legacy Canvas-items (больше не используется)
 
         # Tray reference
         self.tray_icon: Optional[Any] = None
@@ -1479,51 +1490,42 @@ class CubeApp:
                 'count': count,
             })
 
-        # Draw trail history (older = more faded)
+        # Рисуем трейлы одним векторным слоем в общий буфер рендерера
+        # (раньше: (trail_len-1)*count отдельных Canvas-айтемов, ≈26000 при
+        # density=20 → система висла). Теперь: cell=1 (одиночные пиксели),
+        # это ~36× быстрее, а шлейф выглядит даже чище.
         trail_len: int = len(self._trail_history)
         if trail_len > 1 and self._trail_enabled:
-            # Ensure trail item pool is large enough
-            trail_total_needed: int = (trail_len - 1) * count
-            while len(self._trail_items) < trail_total_needed:
-                item = self.canvas.create_rectangle(
-                    0, 0, 2, 2,
-                    fill='#000000', outline='', width=0,
-                )
-                self._trail_items.append(item)
-            while len(self._trail_items) > trail_total_needed:
-                self.canvas.delete(self._trail_items.pop())
-
-            idx: int = 0
+            # Соберём все пиксели трейлов в плоские массивы, с учётом fade.
+            chunks_x: List[NDArray[np.float64]] = []
+            chunks_y: List[NDArray[np.float64]] = []
+            chunks_rgb: List[NDArray[np.uint8]] = []
             for age in range(1, trail_len):
                 frame_data = self._trail_history[trail_len - 1 - age]
                 fade: float = 1.0 - (age / self._trail_history.maxlen)
                 if fade < 0.05:
                     continue
-                trail_cell: int = max(1, int(frame_data['cell'] * fade))
-                trail_half: int = trail_cell // 2
-                for i in range(frame_data['count']):
-                    if idx >= len(self._trail_items):
-                        break
-                    tx = int(frame_data['px'][i]) - trail_half
-                    ty = int(frame_data['py'][i]) - trail_half
-                    tr = int(frame_data['r'][i] * fade)
-                    tg = int(frame_data['g'][i] * fade)
-                    tb = int(frame_data['b'][i] * fade)
-                    tcolour: str = f'#{tr:02x}{tg:02x}{tb:02x}'
-                    self.canvas.coords(
-                        self._trail_items[idx],
-                        tx, ty, tx + trail_cell, ty + trail_cell,
-                    )
-                    self.canvas.itemconfig(self._trail_items[idx], fill=tcolour)
-                    idx += 1
-            # Hide unused trail items
-            for j in range(idx, len(self._trail_items)):
-                self.canvas.coords(self._trail_items[j], 0, 0, 0, 0)
+                fc = frame_data['count']
+                if fc == 0:
+                    continue
+                fade_arr: NDArray[np.float64] = np.asarray(fade, dtype=np.float64)
+                col = np.stack([
+                    frame_data['r'] * fade_arr,
+                    frame_data['g'] * fade_arr,
+                    frame_data['b'] * fade_arr,
+                ], axis=1).clip(0, 255).astype(np.uint8)
+                chunks_x.append(frame_data['px'])
+                chunks_y.append(frame_data['py'])
+                chunks_rgb.append(col)
+            if chunks_x:
+                all_tx = np.concatenate(chunks_x)
+                all_ty = np.concatenate(chunks_y)
+                all_trgb = np.concatenate(chunks_rgb)
+                self._trail_layer = (all_tx, all_ty, all_trgb)
         elif not self._trail_enabled:
-            # Hide all trails when disabled
+            # Снять шлейф: очистить историю и флаг слоя
             self._trail_history.clear()
-            for item in self._trail_items:
-                self.canvas.coords(item, 0, 0, 0, 0)
+            self._trail_layer = None
 
         char_mode: str = self.config.get('char_mode', 'dots')
         symbol_set_name: str = self.config.get('symbol_set', 'default')
@@ -1542,54 +1544,28 @@ class CubeApp:
             self._current_symbol = symbol
             self._using_chars = (char_mode != 'dots')
 
-        # Determine font size for symbols
-        char_font_size: int = max(4, cell_actual - 1)
+        # ── Единый рендер-конвейер (и геометрия, и символы через рендерер) ─
+        # Раньше: 2400–26000 вызовов canvas.coords()+itemconfig() за кадр.
+        # Теперь: 1 картинка через numpy-буфер + 1 blit.
+        rgb_arr: NDArray[np.uint8] = np.column_stack(
+            (r_p, g_p, b_p),
+        ).astype(np.uint8)
+        self.renderer.begin_frame()
+        # Сначала трейлы (слой ПОД кубом), потом сам куб.
+        if self._trail_layer is not None:
+            tx, ty, trgb = self._trail_layer
+            self.renderer.add_points(tx, ty, trgb, 1, 'square')
 
-        # Grow or shrink item pool
-        while len(self.particle_items) < count:
-            if self._using_chars:
-                item = self.canvas.create_text(
-                    0, 0, text='◆',
-                    fill='#000000', font=('Segoe UI', char_font_size, 'bold'),
-                    anchor='center',
-                )
-            elif symbol in ('circle', 'dot'):
-                item = self.canvas.create_oval(
-                    0, 0, cell_actual, cell_actual,
-                    fill='#000000', outline='', width=0,
-                )
-            else:
-                item = self.canvas.create_rectangle(
-                    0, 0, cell_actual, cell_actual,
-                    fill='#000000', outline='', width=0,
-                )
-            self.particle_items.append(item)
-        while len(self.particle_items) > count:
-            self.canvas.delete(self.particle_items.pop())
-
-        # Update positions & colours
-        for i in range(count):
-            if self._using_chars:
-                char_idx: int = i % len(symbols_set)
-                ch: str = symbols_set[char_idx]
-                self.canvas.coords(
-                    self.particle_items[i],
-                    int(px[i]), int(py[i]),
-                )
-                colour = f'#{int(r_p[i]):02x}{int(g_p[i]):02x}{int(b_p[i]):02x}'
-                self.canvas.itemconfig(
-                    self.particle_items[i],
-                    text=ch, fill=colour,
-                )
-            else:
-                x1 = int(px[i]) - half_actual
-                y1 = int(py[i]) - half_actual
-                colour = f'#{int(r_p[i]):02x}{int(g_p[i]):02x}{int(b_p[i]):02x}'
-                self.canvas.coords(
-                    self.particle_items[i],
-                    x1, y1, x1 + cell_actual, y1 + cell_actual,
-                )
-                self.canvas.itemconfig(self.particle_items[i], fill=colour)
+        if self._using_chars:
+            # Символьный режим: глифы растеризуются ОДИН РАЗ (кеш),
+            # штампуются векторно через add_chars.
+            char_list: List[str] = [
+                symbols_set[i % len(symbols_set)] for i in range(count)
+            ]
+            self.renderer.add_chars(px, py, rgb_arr, char_list, cell_actual)
+        else:
+            self.renderer.add_points(px, py, rgb_arr, cell_actual, symbol)
+        self.renderer.finish_frame()
 
         # Startup hint overlay
         if self._show_hint:
