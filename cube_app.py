@@ -69,6 +69,9 @@ from PIL import Image, ImageDraw
 # Renderer — единый слой отрисовки облака точек (numpy-буфер → 1 картинка)
 from renderer import PointCloudRenderer
 
+# Render Graph
+from core.render_graph import FrameContext, RenderGraph, GeometryPass, TrailPass
+
 # PixelGrid — framebuffer agent overlay
 from pixel_grid import PixelGrid, PixelGridWindow
 
@@ -1007,6 +1010,11 @@ class CubeApp:
         self.renderer: PointCloudRenderer = PointCloudRenderer()
         self.renderer.attach(self.canvas)
 
+        # --- Render Graph — data-driven pipeline ---
+        self.render_graph: RenderGraph = RenderGraph()
+        self.render_graph.add_pass(TrailPass())
+        self.render_graph.add_pass(GeometryPass())
+
         # ─── Fullscreen overlay ─────────────────────────────────────
         # Stretch to whole screen so cube never clips regardless of
         # scale, morph, animation, or pulse.
@@ -1544,28 +1552,36 @@ class CubeApp:
             self._current_symbol = symbol
             self._using_chars = (char_mode != 'dots')
 
-        # ── Единый рендер-конвейер (и геометрия, и символы через рендерер) ─
-        # Раньше: 2400–26000 вызовов canvas.coords()+itemconfig() за кадр.
-        # Теперь: 1 картинка через numpy-буфер + 1 blit.
+        # ── Render Graph — data-driven pipeline ────────────────────────
         rgb_arr: NDArray[np.uint8] = np.column_stack(
             (r_p, g_p, b_p),
         ).astype(np.uint8)
-        self.renderer.begin_frame()
-        # Сначала трейлы (слой ПОД кубом), потом сам куб.
-        if self._trail_layer is not None:
-            tx, ty, trgb = self._trail_layer
-            self.renderer.add_points(tx, ty, trgb, 1, 'square')
 
+        char_list: Optional[List[str]] = None
         if self._using_chars:
-            # Символьный режим: глифы растеризуются ОДИН РАЗ (кеш),
-            # штампуются векторно через add_chars.
-            char_list: List[str] = [
+            char_list = [
                 symbols_set[i % len(symbols_set)] for i in range(count)
             ]
-            self.renderer.add_chars(px, py, rgb_arr, char_list, cell_actual)
+
+        ctx = FrameContext(
+            px=px, py=py, pz=pz,
+            rgb=rgb_arr,
+            cell=cell_actual,
+            symbol=symbol,
+            trail_enabled=self._trail_enabled,
+            trail_layer=self._trail_layer,
+            using_chars=self._using_chars,
+            char_list=char_list,
+            symbols_set=symbols_set,
+            config=self.config,
+            w=w, h=h,
+        )
+
+        rgba_buf, bbox = self.render_graph.execute(ctx)
+        if rgba_buf is not None and rgba_buf.size > 0:
+            self.renderer.blit(rgba_buf, bbox[0], bbox[1])
         else:
-            self.renderer.add_points(px, py, rgb_arr, cell_actual, symbol)
-        self.renderer.finish_frame()
+            self.renderer.hide()
 
         # Startup hint overlay
         if self._show_hint:
