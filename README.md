@@ -1,171 +1,214 @@
-# ♢ Hermes Cube
+# ♢ Hermes Engine — Desktop Particle Simulation Runtime v2
 
-Десктопный аватар-куб из частиц на прозрачном фоне. Работает как overlay поверх всех окон на Windows. Умеет общаться через локальную LLM (LM Studio).
+**Hermes Engine** — data-driven particle simulation runtime с AI-ядром.  
+Работает как прозрачный overlay поверх всех окон на Windows.  
+Общается через локальную LLM (LM Studio).  
+Рисует через numpy → PIL или GPU (OpenGL 3.3+).
 
-## ✨ Возможности
+> **Архитектура:** Мир = данные + системы  
+> `World (sim/render/meta) → System Pipeline → Render Graph → Renderer → Экран`
 
-- **3D-куб из частиц** с RGB-градиентом, глубиной и вращением по 3 осям
-- **5 форм** — cube, sphere, torus, dna, metaball с плавным морфингом между ними
-- **5 анимаций частиц** — wave, breathe, orbit, geyser, off
-- **AI-общение** — встроенный чат с LM Studio (локальная LLM), авто-запуск при необходимости
-- **Настроение** — ответ AI влияет на пульсацию, скорость вращения и цвет куба
-- **Парящие буквы** — ответ AI вылетает буквами из центра куба
-- **Прозрачный фон** — виден только куб (WS_EX_TRANSPARENT / transparentcolor)
-- **Перетаскивание** — клавиша `T` переключает режим drag, выпуклая оболочка вокруг куба
-- **Real-time настройки** — клавиша `s` или ПКМ → все параметры с прокруткой
-- **Системный трей** — меню с AI-вводом, настройками, трейлами, выходом
-- **PixelGrid** — пиксельный framebuffer для агентов (клавиша `G`)
-- **Агенты** — пиксельные частицы-агенты с ролями (клавиша `A`)
-- **Char mode** — поверхность куба из символов/symbols/words/glow
-- **Трейлы** — шлейф из предыдущих положений куба
-- **Single-instance lock** — предотвращает запуск второго экземпляра
-- **Конфиг** — сохраняется в JSON, автозагрузка при старте
+---
 
-## 🎬 Демо
-
-![Hero](screenshots/hero.png)
-*♢ Hermes Cube — 3D-куб из частиц на прозрачном фоне*
-
-![Все 5 форм](screenshots/shapes.png)
-*Куб, Сфера, Тор, ДНК, Метаболл — переключение в реальном времени*
-
-![5 анимаций](screenshots/animations.png)
-*off, wave, breathe, orbit, geyser — анимация частиц*
-
-![Матрица форм × анимаций](screenshots/matrix.png)
-*Все комбинации 5 форм × 5 анимаций*
-
-![Морфинг](screenshots/morph.png)
-*Плавный морфинг 0-100% от куба к выбранной форме*
-
-![AI-режим](screenshots/ai.png)
-*AI-диалог через LM Studio — авто-запуск, смена настроения куба*
-
-![Плотность частиц](screenshots/density.png)
-*От 8 до 20 частиц на грань — настройка производительности*
-
-![Char mode](screenshots/char_symbols.png)
-*Поверхность куба из символов вместо точек*
-
-![Куб](screenshots/cube.png)
-![Сфера](screenshots/sphere.png)
-![Тор](screenshots/torus.png)
-![ДНК](screenshots/dna.png)
-![Метаболл](screenshots/metaball.png)
-
-## ⚙️ Горячие клавиши
-
-| Клавиша | Действие |
-|---------|----------|
-| `s` | Открыть настройки |
-| `c` / `C` | Открыть AI-ввод |
-| `t` / `T` | Переключить перетаскивание |
-| `r` / `R` | Вкл/выкл трейлы (шлейф) |
-| `g` / `G` | Вкл/выкл PixelGrid |
-| `a` / `A` | Создать агента |
-| `Esc` / `q` / `h` | Скрыть окно |
-| ЛКМ + тащить | Переместить куб (в режиме drag) |
-| ПКМ | Контекстное меню |
-| Трей | AI-ввод, настройки, трейлы, выход |
-
-## 🛠 Настройки (клавиша `s`)
-
-| Параметр | По умолчанию | Диапазон | Описание |
-|----------|-------------|----------|----------|
-| Размер куба | 0.27 | 0.08 – 0.6 | Общий масштаб |
-| Скорость вращения | 0.28 | 0.05 – 1.0 | Вращение по 3 осям |
-| Частота пульсации | 1.8 | 0.3 – 5.0 | Пульсация размера |
-| Амплитуда пульсации | 0.12 | 0.0 – 0.35 | Сила пульсации |
-| Плотность частиц | 12 | 6 – 20 | Частиц на грань |
-| Размер частицы | 6 | 2 – 12 | Размер в px |
-| Пресет формы | cube | cube/sphere/torus/dna/metaball | Форма (реал-тайм) |
-| Морфинг | 0% | 0% – 100% | Плавный переход куба → форма |
-| Форма частиц | square | square/circle/dot | Как выглядит частица |
-| Анимация | off | off/wave/breathe/orbit/geyser | Движение частиц |
-| Скорость анимации | 1.5 | 0.3 – 5.0 | Множитель скорости |
-| Амплитуда анимации | 0.12 | 0.0 – 0.5 | Сила смещения частиц |
-| Поверх всех окон | да | да/нет | Overlay-режим |
-| Char mode | dots | dots/symbols/words/glow | Символьный режим |
-
-## 🤖 AI-интеграция
-
-Куб общается через **LM Studio** (локальный сервер на `127.0.0.1:1234`).
-
-**Как работает:**
-1. Нажать `C` (или трей → 💬 Ввод)
-2. Появляется окно ввода внизу экрана
-3. Написать сообщение → Enter
-4. **Если LM Studio не запущена** — куб сам запускает её (без окна терминала)
-5. **Если модель не загружена** — куб загружает `gemma-4-e4b-it` через API
-6. После готовности — запрос уходит, куб ждёт ответ
-7. AI отвечает JSON-объектом с mood/text/color_hue
-8. **Настроение** AI меняет пульсацию, скорость вращения и цвет куба
-9. Ответ вылетает буквами из центра куба (парящие частицы)
-
-**Формат ответа модели:**
-```json
-{"mood": "happy|sad|thinking|speaking|idle", "text": "ответ...", "color_hue": 0.0-1.0}
-```
-
-**Модель по умолчанию:** `lmstudio-community/gemma-4-E4B-it-GGUF`
-
-**Системный промпт:** куб представляется как живой аватар, отвечает кратко (2-3 предложения), эмоционально.
-
-## 🚀 Установка
-
-### Из исходников (Python)
+## 🚀 Быстрый старт
 
 ```bash
 git clone https://github.com/kirarud/hermes-cube.git
 cd hermes-cube
 
-# Установка зависимостей
-pip install numpy pillow pystray
+pip install numpy pillow moderngl
 
-# Запуск
+# Запуск новой версии (Engine v2)
+python main.py
+
+# Или старая точка входа (совместимость)
 python cube_app.py
 ```
 
-### Portable .exe
+---
 
-Скачай `HermesCube.exe` из [Releases](https://github.com/kirarud/hermes-cube/releases) — запускай из любой папки.
+## ⚙️ Архитектура
 
-## 🏗 Сборка .exe
+### Мир (core/world.py)
 
-```bash
-pip install pyinstaller
-pyinstaller --onefile --windowed \
-  --collect-all pystray --collect-all PIL --collect-all numpy \
-  --hidden-import=pystray._win32 --hidden-import=PIL._tkinter_finder \
-  --name HermesCube cube_app.py
-```
-
-## 📦 Структура проекта
+Всё состояние проекта — в одном dataclass-е с тремя зонами:
 
 ```
-hermes-cube/
-├── cube_app.py              # Основное приложение (~1800 строк)
-├── ai_module.py             # AI-ядро: LM Studio, чат, настроение (~470 строк)
-├── cube_agents.py           # Агенты: роли, поведение (~360 строк)
-├── particle_agents.py       # ParticleAgent — частица-агент (~270 строк)
-├── char_cube.py             # Символьный куб (~106 строк)
-├── obsidian_graph.py        # Визуализация Obsidian-графа (~525 строк)
-├── spatial_depth.py         # Spatial Depth Workspace (~192 строк)
-├── pixel_grid.py            # Пиксельная сетка для агентов (~453 строк)
-├── cube_agent_demo.py       # Демонстрация агентов (~83 строки)
-├── installer.py             # Инсталлятор/установщик (~283 строки)
-├── dist/                    # Сборки .exe
-│   ├── HermesCube.exe
-│   └── HermesCubeSetup.exe
-├── docs/                    # Документация
-└── screenshots/             # Скриншоты
+World
+├── sim     — симуляция (position, velocity, color, shape_cache)
+├── render  — представление (projected_x/y, final_rgb, depth, trails)
+└── meta    — управление (config, время, AI, события, ввод)
 ```
+
+### System Pipeline (core/pipeline.py)
+
+Системы — чистые функции `(World, dt) → None`, выполняемые по порядку:
+
+```
+Sim Stage  (fixed dt) — GridGenerator → Morph → Animation → Rotation
+FX Stage   (variable) — Trail
+View Stage (variable) — Color → Projection
+Out Stage  (variable) — RenderSystem (через Render Graph)
+```
+
+Ни одна система:
+- Не вызывает другие системы
+- Не знает про Renderer / Tkinter / UI
+- Не создаёт новые частицы напрямую (через active_mask)
+
+### Render Graph (core/render_graph.py)
+
+Data-driven конвейер отрисовки:
+- **TrailPass** — шлейф частиц (под кубом)
+- **GeometryPass** — сами частицы (точки или символы)
+- **Post-processing** — bloom, glow, blur (через core/effects.py)
+
+### GPU (core/gpu.py)
+
+- moderngl (OpenGL 3.3+, NVIDIA/AMD/Intel)
+- VBO с позициями частиц (один раз, static draw)
+- Vertex shader: rotation via uniform matrix
+- PBO read-back → numpy → Tk bridge
+- CPU-fallback если GPU недоступен
+
+---
+
+## ✨ Возможности
+
+| Возможность | Описание |
+|-------------|----------|
+| **3D-куб из частиц** | RGB-градиент, вращение по 3 осям, пульсация |
+| **5 форм** | cube, sphere, torus, dna, metaball с плавным морфингом |
+| **5 анимаций** | wave, breathe, orbit, geyser, off |
+| **AI-общение** | LM Studio (gemma-4-e4b-it), авто-запуск, structured output JSON |
+| **Настроение** | mood меняет пульсацию, скорость вращения, цвет куба |
+| **Парящие буквы** | ответ AI вылетает буквами с гравитацией |
+| **Прозрачный фон** | color-key #000001 + WS_EX_TRANSPARENT (click-through) |
+| **Drag** | T/toggle, convex hull drag handle |
+| **Настройки** | S/ПКМ — scrollable панель с instant-apply |
+| **Трей** | меню: ввод, настройки, трейлы, выход |
+| **PixelGrid** | G/toggle — framebuffer для пиксельных агентов |
+| **Char mode** | dots, symbols, words, glow — 9 наборов символов |
+| **Трейлы** | R/toggle — шлейф с затуханием (12 кадров) |
+| **Single-instance** | lock-файл в temp |
+| **GPU** | moderngl, OpenGL 3.3, CPU fallback |
+| **Эффекты** | Bloom, glow, blur, depth fog |
+| **Сохранение** | World snapshot (zip+npz), ReplayBuffer |
+
+---
+
+## 🎮 Горячие клавиши
+
+| Клавиша | Действие |
+|---------|----------|
+| `s` | Настройки |
+| `c` / `C` | AI-ввод |
+| `t` / `T` | Режим перемещения |
+| `r` / `R` | Трейлы вкл/выкл |
+| `g` / `G` | PixelGrid |
+| `a` / `A` | Создать агента |
+| `Esc` / `q` / `h` | Скрыть |
+| ЛКМ + drag | Переместить куб (в режиме drag) |
+| ПКМ | Контекстное меню |
+
+---
+
+## 🧱 Структура проекта
+
+```
+hermes-cube-repo/
+├── main.py                 # Точка входа Engine v2
+├── cube_app.py             # Старая точка входа (обратная совместимость)
+│
+├── core/                   # Ядро Engine
+│   ├── world.py            # World — sim/render/meta dataclass
+│   ├── pipeline.py         # Pipeline + Stage оркестрация
+│   ├── render_graph.py     # Pass-based render pipeline
+│   ├── gpu.py              # GPU-рендерер (moderngl)
+│   ├── effects.py          # Post-processing (bloom, blur, glow)
+│   ├── serialization.py    # Сохранение/загрузка World + Replay
+│   ├── ai_constants.py     # AI mood константы
+│   └── systems/            # Системы — каждая в своём файле
+│       ├── grid_generator.py   # Генерация сетки частиц
+│       ├── rotation.py         # 3D-вращение
+│       ├── morph.py            # Морфинг форм
+│       ├── animation.py        # Анимации частиц
+│       ├── color.py            # Depth shading + HSV shift
+│       ├── projection.py       # 3D → 2D проекция
+│       ├── trail.py            # Шлейф частиц
+│       ├── ai.py               # AI-чат (LM Studio)
+│       ├── mood.py             # Анализ настроения
+│       ├── lm_autostart.py     # Авто-запуск LM Studio
+│       ├── text_overlay.py     # Парящие буквы
+│       ├── input_window.py     # Окно ввода
+│       ├── window.py           # Tkinter-окно
+│       ├── input.py            # Клавишный ввод
+│       └── drag.py             # Drag-перемещение
+│
+├── renderer.py             # Бэкенд отрисовки (numpy буфер → Tk canvas)
+├── pixel_grid.py           # Пиксельный framebuffer
+├── cube_agents.py          # UI-агенты (Button, Slider, TextLabel)
+├── particle_agents.py      # Частицы-агенты (cursor, spawner)
+├── char_cube.py            # Символьный куб (9 наборов)
+├── obsidian_graph.py       # Obsidian граф
+├── spatial_depth.py        # Spatial Depth
+│
+├── tests/                  # Тесты
+│   ├── test_systems_vs_cubeengine.py
+│   ├── test_pipeline.py
+│   └── debug_diff.py
+│
+├── scripts/                # Скрипты
+│   └── progress_watcher.py
+│
+├── screenshots/            # Скриншоты
+└── dist/                   # Сборки .exe
+```
+
+---
+
+## 🧠 Как написать свою систему
+
+```python
+"""systems/my_system.py — Новая система."""
+from core.world import World
+
+def update(world: World, dt: float) -> None:
+    """Прочитать world, изменить world. Никаких побочных эффектов."""
+    for i in range(world.sim.active_count):
+        # Мутируем sim
+        world.sim.position[i, 1] += dt * 10.0  # падение вниз
+```
+
+Подключить в `build_default_pipeline()` или в `main.py`.
+
+---
+
+## 📊 Производительность
+
+| Конфигурация | ms/frame | FPS |
+|---|---|---|
+| Pipeline (864 частиц, CPU) | 0.51 | ~2000 |
+| GPU (864 частиц, RTX 2070) | <0.1 | ~10000+ |
+| Все формы + анимации (CPU) | 0.54 | ~1800 |
+| Render Graph (один кадр) | 1.82 | ~550 |
+
+---
 
 ## 🔧 Требования
 
-- **ОС:** Windows 10/11
-- **Python:** 3.11+ (для запуска из исходников)
-- **AI:** LM Studio с gemma-4-e4b-it (загружается автоматически, необязательно)
+- **ОС:** Windows 10/11 (Linux/macOS не тестировались)
+- **Python:** 3.11+
+- **GPU (опционально):** OpenGL 3.3+ (RTX 2070 SUPER протестирована)
+- **AI (опционально):** LM Studio с gemma-4-e4b-it
+
+## Установка
+
+```bash
+pip install numpy pillow moderngl pystray
+```
+
+---
 
 ## 📄 Лицензия
 
