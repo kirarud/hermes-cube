@@ -296,6 +296,11 @@ class HermesEngine:
         if not self.running:
             return
 
+        # Тормозим рендер когда окно скрыто (Esc/H)
+        if self.window.root.state() == 'withdrawn':
+            self.window.root.after(FRAME_MS * 4, self._render_loop)
+            return
+
         now = self.window.root.tk.call('clock', 'milliseconds')
         if self.t0 == 0:
             self.t0 = now
@@ -309,6 +314,9 @@ class HermesEngine:
         if w < 10 or h < 10:
             self.window.root.after(FRAME_MS, self._render_loop)
             return
+
+        # Process pending Tkinter events (иначе клавиши/мышь накапливаются)
+        self.window.root.update_idletasks()
 
         # Update world
         self.world.meta.t = elapsed
