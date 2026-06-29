@@ -67,6 +67,7 @@ from core.systems.window import WindowSystem
 from core.systems.text_overlay import TextOverlaySystem
 from core.systems.input_window import InputWindowSystem
 from core.systems.drag import DragSystem
+from core.monitor import FrameMonitor
 from renderer import PointCloudRenderer
 from char_cube import SYMBOL_SETS
 
@@ -205,11 +206,10 @@ class HermesEngine:
         self._pixel_anim_active: bool = False
         self._pixel_anim_frame: int = 0
 
-        # FPS Monitor
-        self._fps_last_time: float = time.perf_counter()
+        # FPS/монитор
+        self.monitor = FrameMonitor()
         self._fps_frame_count: int = 0
-        self._fps_display: float = 0.0
-        self._fps_timings: dict[str, float] = {}
+        self._fps_last_time: float = time.perf_counter()
 
         # Bindings (simplified)
         self.window.root.bind('<Button-1>', self._drag_start)
@@ -409,37 +409,36 @@ class HermesEngine:
             labels = {'idle': '😐', 'thinking': '🤔', 'speaking': '💬', 'happy': '😊', 'sad': '😢'}
             self._show_mode_overlay(labels.get(self.world.meta.mood, ''))
 
-        # ── FPS monitor ───────────────────────────────────────────
+        # ── Мониторинг ───────────────────────────────────────────────
+        # Считаем FPS
         self._fps_frame_count += 1
         now_s = time.perf_counter()
         dt_fps = now_s - self._fps_last_time
+        fps = 0.0
         if dt_fps >= 0.5:
-            self._fps_display = self._fps_frame_count / dt_fps
+            fps = self._fps_frame_count / dt_fps
             self._fps_frame_count = 0
             self._fps_last_time = now_s
-            # Store per-section timings
-            self._fps_timings = {
-                'idle':      (_t1 - _t0) / 1000,
-                'pipeline':  (_t2 - _t1) / 1000,
-                'sort':      (_t3 - _t2) / 1000,
-                'render':    (_t4 - _t3) / 1000,
-                'total':     (_t4 - _t0) / 1000,
-            }
 
-        # Draw FPS overlay (каждый кадр обновляем)
-        self.canvas.delete('fps_overlay')
-        n_part = self.world.sim.active_count
-        fps_text = f'{self._fps_display:.0f} fps • {n_part} ptcl'
-        if self._fps_timings:
-            t = self._fps_timings
-            fps_text += f'\npip {t["pipeline"]:.1f}µs | sort {t["sort"]:.1f}µs | rdr {t["render"]:.1f}µs'
-            if t.get('total', 0) > 2000:
-                fps_text += f'\n⚠ {t["total"]/1000:.1f}ms total (> {FRAME_MS}ms frame budget)'
-        self.canvas.create_text(
-            8, 8, anchor='nw', text=fps_text,
-            fill=UI_ACCENT, font=('Consolas', 10),
-            tags='fps_overlay',
+        # Логируем кадр
+        t_pip = _t2 - _t1
+        t_srt = _t3 - _t2
+        t_rdr = _t4 - _t3
+        t_tot = _t4 - _t0
+        self.monitor.log_frame(
+            fps=fps,
+            pipeline_us=t_pip / 1000,
+            sort_us=t_srt / 1000,
+            render_us=t_rdr / 1000,
+            total_us=t_tot / 1000,
+            n_particles=self.world.sim.active_count,
+            bbox=bbox if rgba_buf is not None else None,
+            config=self.config,
         )
+
+        # Рисуем HUD поверх всего
+        self.canvas.delete('monitor_hud')
+        self.monitor.draw(self.canvas, w, h)
 
         self.frame_count += 1
         self.window.root.after(FRAME_MS, self._render_loop)
