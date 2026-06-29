@@ -57,6 +57,7 @@ _check_single_instance()
 # Ensure project root is in path early
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import time
 import numpy as np
 
 from core.world import World
@@ -191,7 +192,7 @@ class HermesEngine:
         self._show_hint: bool = True
         self._last_mood: str = 'idle'
 
-        # Convex hull drag handle
+        # Drag
         self._drag_handle: Optional[int] = None
         self._cube_ox: float = 0.0
         self._cube_oy: float = 0.0
@@ -203,6 +204,12 @@ class HermesEngine:
         # PixelGrid (legacy, kept for compatibility)
         self._pixel_anim_active: bool = False
         self._pixel_anim_frame: int = 0
+
+        # FPS Monitor
+        self._fps_last_time: float = time.perf_counter()
+        self._fps_frame_count: int = 0
+        self._fps_display: float = 0.0
+        self._fps_timings: dict[str, float] = {}
 
         # Bindings (simplified)
         self.window.root.bind('<Button-1>', self._drag_start)
@@ -298,6 +305,7 @@ class HermesEngine:
 
         # Тормозим рендер когда окно скрыто (Esc/H)
         if self.window.root.state() == 'withdrawn':
+            # Скрыт — не считаем FPS
             self.window.root.after(FRAME_MS * 4, self._render_loop)
             return
 
@@ -307,6 +315,9 @@ class HermesEngine:
             self.window.root.after(100, self._render_loop)
             return
 
+        # ── Полный кадр: секции с таймерами ──────────────────────
+        _t0 = time.perf_counter_ns()
+
         elapsed = (now - self.t0) / 1000.0
         w = self.window.w
         h = self.window.h
@@ -315,8 +326,9 @@ class HermesEngine:
             self.window.root.after(FRAME_MS, self._render_loop)
             return
 
-        # Process pending Tkinter events (иначе клавиши/мышь накапливаются)
+        # Process pending Tkinter events
         self.window.root.update_idletasks()
+        _t1 = time.perf_counter_ns()
 
         # Update world
         self.world.meta.t = elapsed
@@ -328,6 +340,7 @@ class HermesEngine:
 
         # Pipeline
         self.pipeline.run(self.world, FRAME_MS / 1000.0)
+        _t2 = time.perf_counter_ns()
 
         n = self.world.sim.active_count
         px = self.world.render.projected_x[:n]
@@ -339,6 +352,7 @@ class HermesEngine:
         if n > 0:
             order = np.argsort(pz)
             px, py, rgb_arr = px[order], py[order], rgb_arr[order]
+        _t3 = time.perf_counter_ns()
 
         # Convex hull
         if self._drag_handle is not None and self.draggable and n >= 3:
@@ -374,6 +388,7 @@ class HermesEngine:
             self.renderer.blit(rgba_buf, bbox[0], bbox[1])
         else:
             self.renderer.hide()
+        _t4 = time.perf_counter_ns()
 
         # Hint overlay (first frame)
         if self._show_hint:
@@ -393,6 +408,38 @@ class HermesEngine:
             self._last_mood = self.world.meta.mood
             labels = {'idle': '😐', 'thinking': '🤔', 'speaking': '💬', 'happy': '😊', 'sad': '😢'}
             self._show_mode_overlay(labels.get(self.world.meta.mood, ''))
+
+        # ── FPS monitor ───────────────────────────────────────────
+        self._fps_frame_count += 1
+        now_s = time.perf_counter()
+        dt_fps = now_s - self._fps_last_time
+        if dt_fps >= 0.5:
+            self._fps_display = self._fps_frame_count / dt_fps
+            self._fps_frame_count = 0
+            self._fps_last_time = now_s
+            # Store per-section timings
+            self._fps_timings = {
+                'idle':      (_t1 - _t0) / 1000,
+                'pipeline':  (_t2 - _t1) / 1000,
+                'sort':      (_t3 - _t2) / 1000,
+                'render':    (_t4 - _t3) / 1000,
+                'total':     (_t4 - _t0) / 1000,
+            }
+
+        # Draw FPS overlay (каждый кадр обновляем)
+        self.canvas.delete('fps_overlay')
+        n_part = self.world.sim.active_count
+        fps_text = f'{self._fps_display:.0f} fps • {n_part} ptcl'
+        if self._fps_timings:
+            t = self._fps_timings
+            fps_text += f'\npip {t["pipeline"]:.1f}µs | sort {t["sort"]:.1f}µs | rdr {t["render"]:.1f}µs'
+            if t.get('total', 0) > 2000:
+                fps_text += f'\n⚠ {t["total"]/1000:.1f}ms total (> {FRAME_MS}ms frame budget)'
+        self.canvas.create_text(
+            8, 8, anchor='nw', text=fps_text,
+            fill=UI_ACCENT, font=('Consolas', 10),
+            tags='fps_overlay',
+        )
 
         self.frame_count += 1
         self.window.root.after(FRAME_MS, self._render_loop)
