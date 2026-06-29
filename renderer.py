@@ -149,27 +149,6 @@ class PointCloudRenderer:
         self._canvas: Optional[Any] = None
         self._image_item: Optional[int] = None
         self._photo: Optional[Any] = None  # анти-GC
-        # Буферный пул — переиспользовать вместо аллокации каждый кадр
-        self._pool_w: int = 0
-        self._pool_h: int = 0
-        self._pool_buf: Optional[NDArray[np.uint8]] = None
-        self._pool_pil: Optional[Any] = None
-        self._pool_photo: Optional[Any] = None
-
-    def get_buffer(self, w: int, h: int) -> NDArray[np.uint8]:
-        """Вернуть переиспользуемый RGBA-буфер. Аллоцирует только если
-        новый размер больше кешированного."""
-        if w > self._pool_w or h > self._pool_h:
-            self._pool_w = w
-            self._pool_h = h
-            self._pool_buf = np.zeros((h, w, 4), dtype=np.uint8)
-            from PIL import Image
-            self._pool_pil = Image.frombuffer('RGBA', (w, h), self._pool_buf,
-                                               'raw', 'RGBA', 0, 1)
-            self._pool_photo = None  # будет создан при первом blit
-        # Очистка — быстро memset в C
-        self._pool_buf[:] = (0, 0, 0, 0)
-        return self._pool_buf
 
     def attach(self, canvas: Any) -> None:
         """Создать один create_image-айтем на canvas."""
@@ -186,38 +165,18 @@ class PointCloudRenderer:
                 pass
 
     def blit(self, rgba: NDArray[np.uint8], x0: int, y0: int) -> None:
-        """Вывести готовый RGBA-буфер на canvas.
-
-        Если буфер совпадает по размеру с кешированным — переиспользует
-        PIL Image и PhotoImage (PIL Image разделяет память с numpy,
-        так что после очистки+штамповки данные уже обновлены).
-        """
+        """Вывести готовый RGBA-буфер на canvas."""
         if self._canvas is None or self._image_item is None or rgba.size == 0:
             self.hide()
             return
         try:
-            h, w = rgba.shape[:2]
-
-            # Если буфер не совпадает с пулом — используем как есть (временная аллокация)
-            if w == self._pool_w and h == self._pool_h and self._pool_pil is not None:
-                # PIL Image уже разделяет память с self._pool_buf,
-                # и self._pool_buf уже содержит свежие пиксели (get_buffer был вызван)
-                from PIL import ImageTk
-                if self._pool_photo is None:
-                    self._pool_photo = ImageTk.PhotoImage(self._pool_pil)
-                else:
-                    # Обновляем существующий PhotoImage — paste быстрее чем new
-                    self._pool_photo.paste(self._pool_pil)
-                self._photo = self._pool_photo
-            else:
-                # Fallback: свежий буфер, создаём PIL + PhotoImage заново
-                from PIL import Image, ImageTk
-                mode = 'RGBA' if rgba.shape[-1] == 4 else 'RGB'
-                img = Image.fromarray(rgba, mode=mode)
-                self._photo = ImageTk.PhotoImage(img)
-
+            from PIL import Image, ImageTk
+            mode = 'RGBA' if rgba.shape[-1] == 4 else 'RGB'
+            img = Image.fromarray(rgba, mode=mode)
+            photo = ImageTk.PhotoImage(img)
+            self._photo = photo
             self._canvas.coords(self._image_item, x0, y0)
-            self._canvas.itemconfig(self._image_item, image=self._photo)
+            self._canvas.itemconfig(self._image_item, image=photo)
             try:
                 self._canvas.tag_raise(self._image_item, 'drag_handle')
             except Exception:
@@ -243,22 +202,19 @@ class PointCloudRenderer:
 
         buf: (H, W, 4) RGBA — модифицируется на месте.
         px, py, rgb: в экранных координатах.  x0, y0: смещение буфера.
-
-        Vectorized expand — одна операция на все частицы.
         """
         n = len(px)
         if n == 0:
             return
 
-        buf_h, buf_w = buf.shape[0], buf.shape[1]
-
         # 'dot' — уменьшенный квадрат
         if symbol == 'dot':
             cell = max(2, cell // 2)
 
-        half = cell // 2
+        buf_h, buf_w = buf.shape[0], buf.shape[1]
 
-        # --- Pre-clip: отсеять частицы вне буфера ---
+        # --- Pre-clip: отсеять частицы вне буфера ДО expand ---
+        half = cell // 2
         in_view = (
             (px.astype(np.int64) + half >= x0)
             & (px.astype(np.int64) - half < x0 + buf_w)
@@ -270,11 +226,12 @@ class PointCloudRenderer:
         if n == 0:
             return
 
-        # Ядро смещений
+        # Ядро
         if symbol == 'circle':
             kernel = _circle_kernel(cell)
             dy_grid, dx_grid = np.nonzero(kernel)
         else:
+            half = cell // 2
             offs = np.arange(-half, cell - half)
             dx_grid, dy_grid = np.meshgrid(offs, offs)
             dx_grid = dx_grid.ravel()
@@ -282,7 +239,7 @@ class PointCloudRenderer:
 
         k = len(dx_grid)
 
-        # Vectorized expand: (N, k) → flat
+        # Expand: (N, k) экранные координаты
         gx = (px[:, None] + dx_grid[None, :]).astype(np.int64).ravel()
         gy = (py[:, None] + dy_grid[None, :]).astype(np.int64).ravel()
         gcol = np.broadcast_to(rgb[:, None, :], (n, k, 3)).reshape(-1, 3)

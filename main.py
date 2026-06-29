@@ -369,7 +369,7 @@ class HermesEngine:
             using_chars=using_chars, char_list=char_list, symbols_set=symbols_set,
             config=self.config, w=w, h=h,
         )
-        rgba_buf, bbox = self.render_graph.execute(ctx, renderer=self.renderer)
+        rgba_buf, bbox = self.render_graph.execute(ctx)
         if rgba_buf is not None and rgba_buf.size > 0:
             self.renderer.blit(rgba_buf, bbox[0], bbox[1])
         else:
