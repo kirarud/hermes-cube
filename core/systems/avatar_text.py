@@ -97,12 +97,11 @@ class AvatarTextSystem:
         elif self.state == 'morph_out':
             self._timer += dt
             t = max(0.0, 1.0 - self._timer / MORPH_OUT_TIME)
-            # morph_progress 1→0 — чисто pipeline lerp text→base
+            # Чистый реверс morph_in — только morph_progress
             cfg['morph_progress'] = t
             cfg['cube_scale'] = self._original_scale * t + self._text_scale * (1.0 - t)
             cfg['cell_size'] = self._text_cell + int((self._original_cell - self._text_cell) * (1.0 - t))
-            # rotation_speed плавно возвращается
-            cfg['rotation_speed'] = self._original_speed * (1.0 - t)
+            # rotation_speed=0 всё время — восстанавливается только в _finish
             if t <= 0.02:
                 self._finish(world)
 
