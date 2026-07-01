@@ -1,8 +1,4 @@
-"""systems/avatar_text.py — Аватар: текст через font atlas.
-
-Никакого overlay текста — font atlas рисует символы на каждой частице.
-Частицы морфятся в форму текста (shape_cache['text']).
-cell_size и scale увеличиваются для читаемости.
+"""systems/avatar_text.py — Аватар: текст через font atlas с per-particle символами.
 """
 
 from __future__ import annotations
@@ -31,7 +27,7 @@ class AvatarTextSystem:
         self._original_cell: int = 6
         self._original_speed: float = 0.28
         self._text_scale: float = 0.6
-        self._text_cell: int = 8
+        self._text_cell: int = 9
         self._display_text: str = ''
 
     def update(self, world: World, dt: float) -> None:
@@ -41,9 +37,17 @@ class AvatarTextSystem:
             self._start_text_display(world)
             world.meta.ai_response = ''
 
+        # Прямой ввод из speak_buffer (HTTP API)
+        buf = world.meta.speak_buffer
+        if buf and buf != self._last_response:
+            self._last_response = buf
+            world.meta.speak_buffer = ''
+            text = self._extract_text(json.dumps({"text": buf}))
+            if text:
+                self._start_text_display(world)
+                return
         if self.state == 'idle':
             return
-
         cfg = world.meta.config
         if self.state == 'morph_in':
             self._timer += dt
@@ -76,16 +80,13 @@ class AvatarTextSystem:
         if not text:
             return
         print(f"[AvatarText] → \"{text[:60]}...\" ({len(text)} chars)", flush=True)
-
         cfg = world.meta.config
         self._original_scale = float(cfg.get('cube_scale', 0.27))
         self._original_cell = int(cfg.get('cell_size', 6))
         self._original_speed = float(cfg.get('rotation_speed', 0.28))
-
         positions, n_used, _ = layout_text_mask(text, n, font_size=48)
         world.sim.shape_cache['text'] = positions.copy()
         self._display_text = text
-
         cfg['char_mode'] = 'symbols'
         cfg['color_mode'] = 'z_layers'
         cfg['shape_preset'] = 'text'
@@ -94,13 +95,12 @@ class AvatarTextSystem:
         cfg['cube_scale'] = self._original_scale
         cfg['cell_size'] = self._original_cell
         world.meta.text_mode = True
-
+        self._map_text_to_symbols(world, text, n_used)
         if world.render.trail_enabled:
             world.render.trail_enabled = False
             self._trails_was_enabled = True
         else:
             self._trails_was_enabled = False
-
         self.state = 'morph_in'
         self._timer = 0.0
 
@@ -114,14 +114,39 @@ class AvatarTextSystem:
         cfg['char_mode'] = 'dots'
         cfg['color_mode'] = 'default'
         world.meta.text_mode = False
-
         if getattr(self, '_trails_was_enabled', False):
             world.render.trail_enabled = True
-
         self.state = 'idle'
         self._last_response = ''
         self._display_text = ''
         print("[AvatarText] ← restored", flush=True)
+
+    def _map_text_to_symbols(self, world: World, text: str, n_used: int) -> None:
+        """Назначить каждой частице индекс символа из font atlas."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+        from char_cube import SYMBOL_SETS
+        char_map = {}
+        for name, syms in SYMBOL_SETS.items():
+            for ch in syms:
+                if ch not in char_map and len(char_map) < 256:
+                    char_map[ch] = len(char_map)
+        extra = (
+            list('abcdefghijklmnopqrstuvwxyz') +
+            list('ABCDEFGHIJKLMNOPQRSTUVWXYZ') +
+            list('0123456789') +
+            list(".,!?—…:;'\"()[]{}@#$%^&*+=<>/~`|\\-") +
+            list('абвгдеёжзийклмнопрстуфхцчшщъыьэюя')
+        )
+        for ch in extra:
+            if ch not in char_map and len(char_map) < 256:
+                char_map[ch] = len(char_map)
+        text_chars = list(text)
+        for i in range(min(n_used, len(text_chars))):
+            world.sim.symbol_idx[i] = char_map.get(text_chars[i], 0)
+        if n_used < world.sim.active_count:
+            world.sim.symbol_idx[n_used:] = 0
+        print(f"[AvatarText] mapped {min(n_used, len(text_chars))} symbols", flush=True)
 
     @staticmethod
     def _extract_text(raw: str) -> str:

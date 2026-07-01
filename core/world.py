@@ -92,7 +92,8 @@ class MetaState:
     ai_requested: bool = False
     ai_ready: bool = False
     chat_history: List[Dict[str, str]] = field(default_factory=list)
-    text_mode: bool = False  # Аватар показывает текст вместо куба
+    text_mode: bool = False
+    speak_buffer: str = ''
 
     # Input / Events
     events: deque = field(default_factory=deque)

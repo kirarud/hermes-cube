@@ -274,17 +274,21 @@ class HermesEngine:
         using_chars = char_mode != 'dots'
 
         if using_chars:
-            # GPU-рендер через font atlas
-            symbol_set_name: str = self.config.get('symbol_set', 'default')
-            char_indices_arr = self._char_map.get(symbol_set_name)
-            if char_indices_arr is None:
-                char_indices_arr = self._char_map.get('default', np.array([0], dtype=np.int32))
-            n_symbols = len(char_indices_arr)
-            if n_symbols > 0:
-                sym_idx = np.arange(n, dtype=np.int32) % n_symbols
-                per_particle_indices = char_indices_arr[sym_idx]
+            if self.world.meta.text_mode:
+                # Аватар-режим: per-particle индексы из symbol_idx
+                per_particle_indices = self.world.sim.symbol_idx[:n]
             else:
-                per_particle_indices = np.zeros(n, dtype=np.int32)
+                # Обычный режим: циклический выбор из symbol_set
+                symbol_set_name: str = self.config.get('symbol_set', 'default')
+                char_indices_arr = self._char_map.get(symbol_set_name)
+                if char_indices_arr is None:
+                    char_indices_arr = self._char_map.get('default', np.array([0], dtype=np.int32))
+                n_symbols = len(char_indices_arr)
+                if n_symbols > 0:
+                    sym_idx = np.arange(n, dtype=np.int32) % n_symbols
+                    per_particle_indices = char_indices_arr[sym_idx]
+                else:
+                    per_particle_indices = np.zeros(n, dtype=np.int32)
 
             self._renderer.render(
                 px, py, pz, rgb_arr, w, h, cell_size=cell,

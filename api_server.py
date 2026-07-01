@@ -77,12 +77,9 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
         if not text:
             self._send(400, {"error": "text required"})
             return
-        # Пишем напрямую в ai_response — avatar_text прочитает
+        # Используем speak_buffer — напрямую в avatar_text (минуя AI)
         if self.engine and hasattr(self.engine, 'world'):
-            self.engine.world.meta.ai_response = json.dumps(
-                {"mood": "speaking", "text": text, "color_hue": 0.5}
-            )
-            self.engine.world.meta.ai_thinking = False
+            self.engine.world.meta.speak_buffer = text
             self._send(200, {"ok": True, "text": text})
         else:
             self._send(503, {"error": "engine not ready"})
