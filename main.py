@@ -188,7 +188,7 @@ class HermesEngine:
         self.ai_system = AISystem()
         self.mood_system = MoodSystem()
         self.lm_autostart = LMAutoStartSystem()
-        self.avatar_text = AvatarTextSystem()
+        self.avatar_text = AvatarTextSystem(canvas=self._canvas)
         print("[HermesEngine] ai modules ok", flush=True)
 
         self.text_overlay = TextOverlaySystem(self._tk_root)
@@ -246,11 +246,6 @@ class HermesEngine:
         self.pipeline.run(self.world, 0.016)
         _t1 = time.perf_counter_ns()
 
-        # Аватар: запись позиций в world_position (после rotation, перед projection)
-        if self.avatar_text and self.world.meta.text_mode:
-            self.avatar_text._set_morph(self.world,
-                self.world.meta.config.get('morph_progress', 0.0))
-
         n = self.world.sim.active_count
         px = self.world.render.projected_x[:n]
         py = self.world.render.projected_y[:n]
@@ -270,21 +265,16 @@ class HermesEngine:
 
         if using_chars:
             # GPU-рендер через font atlas
-            if self.world.meta.text_mode:
-                # Аватар-режим: per-particle индексы из symbol_idx
-                per_particle_indices = self.world.sim.symbol_idx[:n]
+            symbol_set_name: str = self.config.get('symbol_set', 'default')
+            char_indices_arr = self._char_map.get(symbol_set_name)
+            if char_indices_arr is None:
+                char_indices_arr = self._char_map.get('default', np.array([0], dtype=np.int32))
+            n_symbols = len(char_indices_arr)
+            if n_symbols > 0:
+                sym_idx = np.arange(n, dtype=np.int32) % n_symbols
+                per_particle_indices = char_indices_arr[sym_idx]
             else:
-                # Обычный режим: циклический выбор из symbol_set
-                symbol_set_name: str = self.config.get('symbol_set', 'default')
-                char_indices_arr = self._char_map.get(symbol_set_name)
-                if char_indices_arr is None:
-                    char_indices_arr = self._char_map.get('default', np.array([0], dtype=np.int32))
-                n_symbols = len(char_indices_arr)
-                if n_symbols > 0:
-                    sym_idx = np.arange(n, dtype=np.int32) % n_symbols
-                    per_particle_indices = char_indices_arr[sym_idx]
-                else:
-                    per_particle_indices = np.zeros(n, dtype=np.int32)
+                per_particle_indices = np.zeros(n, dtype=np.int32)
 
             self._renderer.render(
                 px, py, pz, rgb_arr, w, h, cell_size=cell,
@@ -369,26 +359,6 @@ class HermesEngine:
             # Avatar text mode — отображение ответа частицами
             if self.avatar_text:
                 self.avatar_text.update(self.world, 0.016)
-
-            # AI response text on main canvas (3 seconds)
-            self._canvas.delete('ai_msg')
-            ai_txt = self.world.meta.ai_response
-            if ai_txt:
-                self._ai_msg_ttl = 180  # ~3 seconds at 16ms
-                self._ai_msg_text = ai_txt[:120]
-            if getattr(self, '_ai_msg_ttl', 0) > 0:
-                self._ai_msg_ttl -= 1
-                w = self._tk_root.winfo_width()
-                h = self._tk_root.winfo_height()
-                msg = getattr(self, '_ai_msg_text', '')
-                if msg and w > 50 and h > 50:
-                    self._canvas.create_rectangle(
-                        20, h - 60, w - 20, h - 10,
-                        fill='#1a1a2e', outline='#e94560', tags='ai_msg',
-                    )
-                    self._canvas.create_text(
-                        w // 2, h - 35, anchor='center', text=msg,
-                        fill='#ffffff', font=('Consolas', 11), tags='ai_msg')
 
             self.text_overlay.update(self.world, 0.016)
         except Exception as e:

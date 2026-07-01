@@ -1,7 +1,11 @@
 """systems/avatar_text.py — Аватар: текст из частиц куба.
 
-Прямой контроль world_position. 
-lerp от base_position (не world_position) и обратно — чтобы избежать рывка.
+При ответе AI:
+  1. Morph частиц из куба в форму текста (позиции букв)
+  2. Читаемый текст одним create_text() поверх частиц
+  3. Пауза 3.5с, обратный morph
+
+Никаких иероглифов — настоящий Tk text.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from core.world import World
-from core.text_layout import layout_text, get_text_scale_override
+from core.text_layout import layout_text
 
 MORPH_IN_TIME: float = 0.8
 HOLD_TIME: float = 3.5
@@ -22,20 +26,21 @@ MORPH_OUT_TIME: float = 0.8
 
 class AvatarTextSystem:
 
-    def __init__(self) -> None:
+    def __init__(self, canvas: Any) -> None:
+        self.canvas = canvas
         self.state: str = 'idle'
         self._timer: float = 0.0
         self._last_response: str = ''
         self._original_shape: str = 'cube'
         self._original_scale: float = 0.27
-        self._original_char_mode: str = 'dots'
         self._original_rotation_speed: float = 0.28
-        self._text_scale: float = 0.42  # крупнее куба, чтобы текст был читаем
-        self._float_time: float = 0.0
+        self._text_scale: float = 0.65
         self._text_pos: NDArray[np.float64] | None = None
+        self._start_base: NDArray[np.float64] | None = None
         self._start_colors: NDArray[np.float64] | None = None
-        self._start_base: NDArray[np.float64] | None = None  # base_position
         self._n_used: int = 0
+        self._display_text: str = ''
+        self._text_item: int | None = None
 
     def update(self, world: World, dt: float) -> None:
         response = world.meta.ai_response
@@ -54,15 +59,14 @@ class AvatarTextSystem:
             if t >= 1.0:
                 self.state = 'display'
                 self._timer = 0.0
+                self._show_overlay_text()
 
         elif self.state == 'display':
             self._timer += dt
-            self._float_time += dt
-            self._set_morph(world, 1.0)
-            self._apply_float(world)
             if self._timer >= HOLD_TIME:
                 self.state = 'morph_out'
                 self._timer = 0.0
+                self._hide_overlay_text()
 
         elif self.state == 'morph_out':
             self._timer += dt
@@ -72,40 +76,49 @@ class AvatarTextSystem:
                 self._finish(world)
 
     def _set_morph(self, world: World, t: float) -> None:
-        """Записать lerp base → text в world_position."""
+        """lerp base → text в world_position."""
         n = world.sim.active_count
         if n == 0 or self._text_pos is None or self._start_base is None:
             return
-
         n_used = min(n, len(self._text_pos), len(self._start_base))
         if n_used == 0:
             return
-
-        # Векторизованный lerp — без Python-цикла
         world.sim.world_position[:n_used] = (
             self._start_base[:n_used] * (1.0 - t) + self._text_pos[:n_used] * t
         )
         if n_used < n:
             world.sim.world_position[n_used:] = self._start_base[n_used:]
 
-        # cube_scale
         cfg = world.meta.config
         cfg['cube_scale'] = self._original_scale * (1.0 - t) + self._text_scale * t
 
-        # Цвета — векторизованно
         if self._start_colors is not None:
-            s = 1.0 - t
-            target = np.array([220.0, 230.0, 255.0], dtype=np.float64)
-            world.sim.color[:n_used] = self._start_colors[:n_used] * s + target * t
+            world.sim.color[:n_used] = (
+                self._start_colors[:n_used] * (1.0 - t) +
+                np.array([180.0, 210.0, 255.0]) * t
+            )
 
-    def _apply_float(self, world: World) -> None:
-        """Лёгкое покачивание букв."""
-        n = world.sim.active_count
-        if n == 0 or self._text_pos is None:
+    def _show_overlay_text(self) -> None:
+        """Один create_text поверх canvas."""
+        if not self.canvas or not self._display_text:
             return
-        n_used = min(n, len(self._text_pos))
-        wave = np.sin(self._float_time * 1.5 + np.arange(n_used) * 0.7) * 0.015
-        world.sim.world_position[:n_used, 1] += wave
+        self._text_item = self.canvas.create_text(
+            self.canvas.winfo_width() // 2,
+            self.canvas.winfo_height() // 2 - 20,
+            text=self._display_text,
+            fill='#d0e0ff', font=('Segoe UI', 28, 'bold'),
+            anchor='center', justify='center',
+            tags='avatar_overlay',
+        )
+
+    def _hide_overlay_text(self) -> None:
+        if self._text_item:
+            try:
+                self.canvas.delete(self._text_item)
+            except Exception:
+                pass
+            self._text_item = None
+        self.canvas.delete('avatar_overlay')
 
     def _start_text_display(self, world: World) -> None:
         n = world.sim.active_count
@@ -121,28 +134,21 @@ class AvatarTextSystem:
         cfg = world.meta.config
         self._original_shape = cfg.get('shape_preset', 'cube')
         self._original_scale = float(cfg.get('cube_scale', 0.27))
-        self._original_char_mode = cfg.get('char_mode', 'dots')
         self._original_rotation_speed = float(cfg.get('rotation_speed', 0.28))
 
-        # Старт = base_position (неповёрнутая) — чтобы lerp шёл от неё
         self._start_base = world.sim.base_position[:n].copy()
+        self._start_colors = world.sim.color[:n].copy()
 
-        # Генерация раскладки текста (не растягиваем на весь экран)
-        positions, char_indices, n_used = layout_text(text, n)
+        # Позиции букв (частицы morph-ятся в текст)
+        positions, _, n_used = layout_text(text, n)
         self._text_pos = positions.copy()
         self._n_used = n_used
+        self._display_text = text
 
-        # Цвета
-        self._start_colors = world.sim.color[:n].copy()
-        world.sim.color[:n_used] = [220, 230, 255]  # светло-голубой
-
-        # Индексы символов
-        world.sim.symbol_idx[:] = char_indices
-
-        # Отключаем pipeline морф/вращение
+        # Частицы показываем как точки
         cfg['morph_progress'] = 0.0
         cfg['cube_scale'] = self._original_scale
-        cfg['char_mode'] = 'symbols'
+        cfg['char_mode'] = 'dots'
         cfg['rotation_speed'] = 0.0
         cfg['shape_preset'] = 'text'
         world.meta.text_mode = True
@@ -155,24 +161,22 @@ class AvatarTextSystem:
 
         self.state = 'morph_in'
         self._timer = 0.0
-        self._float_time = 0.0
 
     def _finish(self, world: World) -> None:
+        self._hide_overlay_text()
         cfg = world.meta.config
         cfg['shape_preset'] = self._original_shape
         cfg['morph_progress'] = 0.0
         cfg['cube_scale'] = self._original_scale
-        cfg['char_mode'] = self._original_char_mode
         cfg['rotation_speed'] = self._original_rotation_speed
+        cfg['char_mode'] = 'dots'
         world.meta.text_mode = False
         world.meta.mood = 'idle'
         world.meta.color_shift = 0.0
 
-        # Восстанавливаем цвета
         if self._start_colors is not None:
             n = min(len(self._start_colors), world.sim.active_count)
             world.sim.color[:n] = self._start_colors[:n]
-
         if getattr(self, '_trails_was_enabled', False):
             world.render.trail_enabled = True
 
@@ -181,6 +185,7 @@ class AvatarTextSystem:
         self._text_pos = None
         self._start_base = None
         self._start_colors = None
+        self._display_text = ''
         print("[AvatarText] ← restored", flush=True)
 
     @staticmethod
