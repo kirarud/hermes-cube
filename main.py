@@ -252,14 +252,7 @@ class HermesEngine:
         self.world.meta.cube_ox = self._cube_ox
         self.world.meta.cube_oy = self._cube_oy
         self.world.meta.config = self.config
-
         self.pipeline.run(self.world, 0.016)
-
-        # Avatar text morph_out: перезапись world_position для плавного возврата
-        if self.avatar_text and self.world.meta.text_mode and            self.avatar_text.state == 'morph_out':
-            t = self.world.meta.config.get('morph_progress', 0.0)
-            self.avatar_text._write_lerp_out(self.world, t)
-
         _t1 = time.perf_counter_ns()
 
         n = self.world.sim.active_count

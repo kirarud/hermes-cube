@@ -97,12 +97,12 @@ class AvatarTextSystem:
         elif self.state == 'morph_out':
             self._timer += dt
             t = max(0.0, 1.0 - self._timer / MORPH_OUT_TIME)
-            cfg['morph_progress'] = t  # pipeline lerp text→base
+            # morph_progress 1→0 — чисто pipeline lerp text→base
+            cfg['morph_progress'] = t
             cfg['cube_scale'] = self._original_scale * t + self._text_scale * (1.0 - t)
             cfg['cell_size'] = self._text_cell + int((self._original_cell - self._text_cell) * (1.0 - t))
+            # rotation_speed плавно возвращается
             cfg['rotation_speed'] = self._original_speed * (1.0 - t)
-            # Плавно восстанавливаем вращение через world_position
-            self._write_lerp_out(world, t)
             if t <= 0.02:
                 self._finish(world)
 
@@ -162,26 +162,6 @@ class AvatarTextSystem:
         self._last_response = ''
         self._saved_positions = None
         print("[AvatarText] done", flush=True)
-
-    def _write_lerp_out(self, world: World, t: float) -> None:
-        """lerp текста к saved_positions напрямую в world_position.
-        Вызывается каждый кадр morph_out после pipeline.run().
-        """
-        if self._saved_positions is None:
-            return
-        n = world.sim.active_count
-        text = world.sim.shape_cache.get('text')
-        if text is None:
-            return
-        n_used = min(n, len(text), len(self._saved_positions))
-        if n_used == 0:
-            return
-        # lerp: text * (1-t) + saved * t  → при t=1 куб на месте
-        world.sim.world_position[:n_used] = (
-            text[:n_used] * (1.0 - t) + self._saved_positions[:n_used] * t
-        )
-        if n_used < n:
-            world.sim.world_position[n_used:] = self._saved_positions[n_used:]
 
     @staticmethod
     def _extract_text(raw):

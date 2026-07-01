@@ -28,8 +28,8 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_len) if content_len else b'{}'
 
         try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
+            data = json.loads(body if isinstance(body, str) else body.decode('utf-8', errors='replace'))
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
             self._send(400, {"error": "invalid JSON"})
             return
 
