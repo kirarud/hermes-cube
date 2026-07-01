@@ -188,7 +188,7 @@ class HermesEngine:
         self.ai_system = AISystem()
         self.mood_system = MoodSystem()
         self.lm_autostart = LMAutoStartSystem()
-        self.avatar_text = AvatarTextSystem(canvas=self._canvas)
+        self.avatar_text = AvatarTextSystem(canvas=self._canvas, renderer=self._renderer)
         print("[HermesEngine] ai modules ok", flush=True)
 
         self.text_overlay = TextOverlaySystem(self._tk_root)
