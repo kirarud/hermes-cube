@@ -29,6 +29,7 @@ class AvatarTextSystem:
         self._text_scale: float = 0.6
         self._text_cell: int = 9
         self._display_text: str = ''
+        self._saved_positions: NDArray[np.float64] | None = None  # позиции куба на момент старта
 
     def update(self, world: World, dt: float) -> None:
         response = world.meta.ai_response
@@ -66,7 +67,8 @@ class AvatarTextSystem:
         elif self.state == 'morph_out':
             self._timer += dt
             t = max(0.0, 1.0 - self._timer / MORPH_OUT_TIME)
-            cfg['morph_progress'] = t
+            # Lerp от текущей позиции к saved_positions напрямую в world_position
+            self._write_lerp_out(world, t)
             cfg['cube_scale'] = self._original_scale * t + self._text_scale * (1.0 - t)
             cfg['cell_size'] = self._text_cell + int((self._original_cell - self._text_cell) * (1.0 - t))
             if t <= 0.02:
@@ -84,6 +86,8 @@ class AvatarTextSystem:
         self._original_scale = float(cfg.get('cube_scale', 0.27))
         self._original_cell = int(cfg.get('cell_size', 6))
         self._original_speed = float(cfg.get('rotation_speed', 0.28))
+        # Сохраняем текущие позиции куба (уже повёрнутые) для плавного возврата
+        self._saved_positions = world.sim.world_position[:n].copy()
         positions, n_used, _ = layout_text_mask(text, n, font_size=48)
         world.sim.shape_cache['text'] = positions.copy()
         self._display_text = text
@@ -116,10 +120,30 @@ class AvatarTextSystem:
         world.meta.text_mode = False
         if getattr(self, '_trails_was_enabled', False):
             world.render.trail_enabled = True
+
         self.state = 'idle'
         self._last_response = ''
         self._display_text = ''
+        self._saved_positions = None
         print("[AvatarText] ← restored", flush=True)
+
+    def _write_lerp_out(self, world, t=None):
+        if self._saved_positions is None:
+            return
+        if t is None:
+            t = max(0.0, 1.0 - self._timer / MORPH_OUT_TIME) if self._timer > 0 else 0.0
+        n = world.sim.active_count
+        text = world.sim.shape_cache.get('text')
+        if text is None:
+            return
+        n_used = min(n, len(text), len(self._saved_positions))
+        if n_used == 0:
+            return
+        text_pos = text[:n_used]
+        orig = self._saved_positions[:n_used]
+        world.sim.world_position[:n_used] = orig * t + text_pos * (1.0 - t)
+        if n_used < n:
+            world.sim.world_position[n_used:] = self._saved_positions[n_used:]
 
     def _map_text_to_symbols(self, world: World, text: str, n_used: int) -> None:
         """Назначить каждой частице индекс символа из font atlas."""
@@ -135,7 +159,7 @@ class AvatarTextSystem:
             list('abcdefghijklmnopqrstuvwxyz') +
             list('ABCDEFGHIJKLMNOPQRSTUVWXYZ') +
             list('0123456789') +
-            list(".,!?—…:;'\"()[]{}@#$%^&*+=<>/~`|\\-") +
+            list(".,!?—…:;'\"()[]{}@#$%^&*+=<>/~`|\\- ") +
             list('абвгдеёжзийклмнопрстуфхцчшщъыьэюя')
         )
         for ch in extra:

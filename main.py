@@ -254,6 +254,11 @@ class HermesEngine:
         self.world.meta.config = self.config
 
         self.pipeline.run(self.world, 0.016)
+
+        # Avatar morph_out: перезаписываем world_position для плавного возврата
+        if self.avatar_text and self.avatar_text.state == 'morph_out':
+            self.avatar_text._write_lerp_out(self.world, None)
+
         _t1 = time.perf_counter_ns()
 
         n = self.world.sim.active_count

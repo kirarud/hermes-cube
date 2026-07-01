@@ -59,7 +59,7 @@ def build_atlas(font_size: int = 7) -> Tuple[bytes, Dict[str, NDArray[np.int32]]
         list('abcdefghijklmnopqrstuvwxyz') +
         list('ABCDEFGHIJKLMNOPQRSTUVWXYZ') +
         list('0123456789') +
-        list(".,!?\u2014\u2026:;'\"()[]{}@#$%^&*+=<>/~`|\\-") +
+        list(".,!?\u2014\u2026:;'\"()[]{}@#$%^&*+=<>/~`|\\- ") +
         list('абвгдеёжзийклмнопрстуфхцчшщъыьэюя')
     )
     for ch in extra:
