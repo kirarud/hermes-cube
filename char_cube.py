@@ -36,6 +36,12 @@ SYMBOL_SETS: Dict[str, List[str]] = {
     'rus':     list('АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ'),
     'rus_lower': list('абвгдеёжзийклмнопрстуфхцчшщъыьэюя'),
     'custom':  ['#', '@', '%', '&', '+', '=', '~', '*'],
+    '_text': (
+        list('abcdefghijklmnopqrstuvwxyz') +
+        list('ABCDEFGHIJKLMNOPQRSTUVWXYZ') +
+        list('0123456789') +
+        list(".,!?\u2014\u2026:;'\"()[]{}@#$%^&*+=<>/~`|\\-")
+    ),
 }
 
 

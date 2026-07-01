@@ -246,9 +246,9 @@ class HermesEngine:
         self.pipeline.run(self.world, 0.016)
         _t1 = time.perf_counter_ns()
 
-        # Аватар: float-анимация текста (запускается ДО Projection)
+        # Аватар: финальные позиции частиц (после pipeline, перед проекцией)
         if self.avatar_text:
-            self.avatar_text.apply_float(self.world)
+            self.avatar_text.apply_animated(self.world)
 
         n = self.world.sim.active_count
         px = self.world.render.projected_x[:n]
