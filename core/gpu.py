@@ -24,22 +24,43 @@ in vec3 in_color;
 in vec2 in_uv;
 out vec3 v_color;
 out vec2 v_uv;
+flat out int v_symbol;
+uniform int u_symbol;
 void main() {
     gl_Position = vec4(in_position, 0.0, 1.0);
     v_color = in_color;
     v_uv = in_uv;
+    v_symbol = u_symbol;
 }
 """
 
 FRAGMENT_SHADER = """#version 330
 in vec3 v_color;
 in vec2 v_uv;
+flat in int v_symbol;
 out vec4 f_color;
 void main() {
     float d = length(v_uv);
-    if (d > 0.5) discard;
-    float edge = 1.0 - d * 0.3;
-    f_color = vec4(v_color * edge, 1.0);
+    // square: всегда рисуем
+    if (v_symbol == 0) {  // square
+        f_color = vec4(v_color, 1.0);
+        return;
+    }
+    // circle: discard углы
+    if (v_symbol == 1) {  // circle
+        if (d > 0.5) discard;
+        float edge = 1.0 - d * 0.3;
+        f_color = vec4(v_color * edge, 1.0);
+        return;
+    }
+    // dot: крошечный круг в центре (discard большую часть)
+    if (v_symbol == 2) {  // dot
+        if (d > 0.15) discard;
+        f_color = vec4(v_color, 1.0);
+        return;
+    }
+    // fallback
+    f_color = vec4(v_color, 1.0);
 }
 """
 
@@ -57,6 +78,7 @@ class GpuRenderer:
         self._initialized: bool = False
         self._fallback: bool = True
         self._n_capacity: int = 0
+        self._symbol: str = 'circle'
 
     @property
     def available(self) -> bool:
@@ -157,6 +179,11 @@ class GpuRenderer:
         data['pos'] = positions
         data['col'] = colors
         data['uv'] = uvs
+
+        # Symbol uniform
+        symbol_map = {'square': 0, 'circle': 1, 'dot': 2}
+        symbol_name = getattr(self, '_symbol', 'circle')
+        self._program['u_symbol'] = int(symbol_map.get(symbol_name, 1))
 
         self._vbo.write(data.tobytes())
         self._vao.render(mode=self._ctx.TRIANGLES, vertices=n * 6)

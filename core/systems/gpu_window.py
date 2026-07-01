@@ -130,6 +130,7 @@ class MSG(ctypes.Structure):
         ('hwnd', ctypes.c_void_p), ('message', ctypes.c_uint),
         ('wParam', ctypes.c_void_p), ('lParam', ctypes.c_void_p),
         ('time', ctypes.c_ulong), ('pt', POINT),
+        ('lPrivate', ctypes.c_uint),
     ]
 
 
@@ -297,37 +298,31 @@ class GpuWindowSystem:
         return self._height
 
     def make_current(self) -> None:
-        """Установить FBO как текущую цель рендера."""
+        """Установить FBO как текущую цель рендера.
+        alpha=0 — прозрачный для ULW_ALPHA."""
         self._fbo.use()
         self._gl_ctx.clear(0.0, 0.0, 1.0/255.0, 0.0)
 
     def swap_buffers(self) -> None:
-        """PBO readback → DIB → UpdateLayeredWindow (per-pixel alpha).
+        """PBO readback → memmove → DIB → UpdateLayeredWindow (ULW_ALPHA).
 
-        FBO выдает RGBA-байты. DIB 32-bit BI_RGB читает их как BGRA.
-        Это не проблема — ULW_ALPHA использует A-канал для прозрачности,
-        а цвета всё равно правильные (R↔B даёт оттенок, но на чёрном фоне незаметно).
-        Прозрачные пиксели: alpha=0 (clear цвет).
-        Непрозрачные: alpha=255 (частицы).
+        Шейдер уже выводит BGR, DIB получает правильные цвета напрямую.
         """
         if self._hwnd is None or not self._visible:
             return
 
-        # read FBO → memmove → DIB
         buf = self._fbo.read(components=4)
         ctypes.memmove(self._dib_bits, buf, self._width * self._height * 4)
 
-        # UpdateLayeredWindow с per-pixel alpha
         dc_screen = _GetDC(None)
         pt_src = POINT(0, 0)
         pt_dst = POINT(0, 0)
         size = SIZE(self._width, self._height)
-        # BLENDFUNCTION: AC_SRC_OVER, no flags, fully opaque source, AC_SRC_ALPHA
-        blend = BLENDFUNCTION(0, 0, 255, 1)
+        blend = BLENDFUNCTION(0, 0, 255, 1)  # AC_SRC_ALPHA
         _UpdateLayeredWindow(
             self._hwnd, dc_screen, ctypes.byref(pt_dst),
             ctypes.byref(size), self._mem_dc, ctypes.byref(pt_src),
-            0, ctypes.byref(blend), 2,  # ULW_ALPHA = 2
+            0, ctypes.byref(blend), 2,  # ULW_ALPHA
         )
         _ReleaseDC(None, dc_screen)
 

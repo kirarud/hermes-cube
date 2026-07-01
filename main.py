@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""main.py — Hermes Engine v3 (GPU → FBO → PPM → Tk PhotoImage).
-
-Оптимизированный рендер через tk.PhotoImage из сырых PPM данных,
-без PIL/PhotoImage.paste. 8ms per frame → 115+ FPS.
-"""
+"""main.py — Hermes Engine v3 (GPU → FBO → PPM → Tk PhotoImage)."""
 
 from __future__ import annotations
 
@@ -18,7 +14,6 @@ from typing import Any, Dict, List, Optional
 
 print("[main.py] import complete", flush=True)
 
-# ── Single-instance lock ──────────────────────────────────────────────
 _LOCK_FILE: str = os.path.join(tempfile.gettempdir(), 'hermes_cube.lock')
 
 def _check_single_instance() -> None:
@@ -66,8 +61,8 @@ print("[main.py] imports ok", flush=True)
 
 os.environ['HERMES_LOCKED'] = '1'
 from cube_app import (
-    load_config, save_config, DEFAULT_CONFIG,
-    MIN_CELL_SIZE, MAX_CELL_SIZE, FRAME_MS,
+    load_config, save_config,
+    MIN_CELL_SIZE, MAX_CELL_SIZE,
     TRANSPARENT_COLOR, UI_ACCENT,
     _remove_tray_icon_force,
     SettingsWindow,
@@ -75,7 +70,6 @@ from cube_app import (
 
 
 def _create_tray_image():
-    """Создать иконку трея (64×64)."""
     from PIL import Image, ImageDraw
     tray_path = os.path.join(
         os.environ.get('APPDATA', os.path.expanduser('~')),
@@ -130,23 +124,19 @@ def _setup_tray_icon(app_ref: Any) -> Optional[Any]:
 
 
 class HermesEngine:
-    """Hermes Engine v3 — GPU → FBO → PPM → Tk PhotoImage."""
-
     def __init__(self) -> None:
         print("[HermesEngine] init start", flush=True)
         self.config: Dict[str, Any] = load_config()
         print("[HermesEngine] config loaded", flush=True)
 
-        # ── Размеры окна ─────────────────────────────────────────────
-        self._win_w: int = self.config.get('window_width', 700)
-        self._win_h: int = self.config.get('window_height', 550)
-
-        # ── Tk Window (transparent overlay) ──────────────────────────
-        self._tk_root = tk.Tk()
-        self._tk_root.title('♢ Hermes Cube')
+        w = self.config.get('window_width', 700)
+        h = self.config.get('window_height', 550)
         x = self.config.get('x', 100)
         y = self.config.get('y', 100)
-        self._tk_root.geometry(f'{self._win_w}x{self._win_h}+{x}+{y}')
+
+        self._tk_root = tk.Tk()
+        self._tk_root.title('♢ Hermes Cube')
+        self._tk_root.geometry(f'{w}x{h}+{x}+{y}')
         self._tk_root.overrideredirect(True)
         self._tk_root.configure(bg=TRANSPARENT_COLOR)
         self._tk_root.attributes('-transparentcolor', TRANSPARENT_COLOR)
@@ -154,47 +144,40 @@ class HermesEngine:
         self._tk_root.resizable(True, True)
         print("[HermesEngine] tk window created", flush=True)
 
-        # Canvas
         self._canvas = tk.Canvas(
             self._tk_root, bg=TRANSPARENT_COLOR, highlightthickness=0)
         self._canvas.pack(fill=tk.BOTH, expand=True)
         print("[HermesEngine] canvas created", flush=True)
 
-        # ── GPU (standalone moderngl) ────────────────────────────────
         self._gl_ctx = moderngl.create_standalone_context(require=330)
-        self._fbo = self._gl_ctx.simple_framebuffer((self._win_w, self._win_h))
-        print("[HermesEngine] gl context + fbo created", flush=True)
+        self._fbo = self._gl_ctx.simple_framebuffer((w, h))
+        print("[HermesEngine] gl context ok", flush=True)
 
         self._renderer = GpuRenderer()
         if not self._renderer.init_from_context(self._gl_ctx):
             print("[GPU] Shader init failed!")
             sys.exit(1)
-        print("[HermesEngine] gpu renderer init ok", flush=True)
+        print("[HermesEngine] gpu renderer ok", flush=True)
 
-        # ── Буферы для PPM рендера ──────────────────────────────────
-        self._rgb_arr = np.empty((self._win_h, self._win_w, 3), dtype=np.uint8)
-        self._ppm_header = f'P6\n{self._win_w} {self._win_h}\n255\n'.encode()
+        self._rgb_arr = np.empty((h, w, 3), dtype=np.uint8)
+        self._ppm_header = f'P6\n{w} {h}\n255\n'.encode()
         self._tk_photo: Optional[tk.PhotoImage] = None
         self._canvas_image: Optional[int] = None
-        print("[HermesEngine] ppm buffers ready", flush=True)
+        print("[HermesEngine] ppm buffers ok", flush=True)
 
-        # ── World ────────────────────────────────────────────────────
         n_particles = self.config['particle_density'] ** 2 * 6
         self.world: World = World.create(self.config, n_particles=n_particles)
         self._renderer.upload(self.world.sim.active_count)
-        print(f"[HermesEngine] world created: {n_particles} particles", flush=True)
+        print(f"[HermesEngine] world: {n_particles} particles", flush=True)
 
-        # ── Pipeline ─────────────────────────────────────────────────
         self.pipeline = build_default_pipeline()
         print("[HermesEngine] pipeline ok", flush=True)
 
-        # ── AI Systems ───────────────────────────────────────────────
         self.text_overlay = TextOverlaySystem(self._tk_root)
         self.input_win = InputWindowSystem(self._tk_root)
         self.input_win.connect_world(self.world)
         print("[HermesEngine] ai systems ok", flush=True)
 
-        # ── State ────────────────────────────────────────────────────
         self.running: bool = True
         self._last_mood: str = 'idle'
         self._trail_enabled: bool = False
@@ -203,19 +186,16 @@ class HermesEngine:
         self._cube_oy: float = 0.0
         self._show_fps: bool = True
 
-        # ── Monitor ──────────────────────────────────────────────────
         self.monitor = FrameMonitor()
-        self._fps_frame_count: int = 0
-        self._fps_last_time: float = time.perf_counter()
-        print("[HermesEngine] state initialized", flush=True)
+        self._fps_count: int = 0
+        self._fps_time: float = time.perf_counter()
+        print("[HermesEngine] state ok", flush=True)
 
-        # ── Tray ─────────────────────────────────────────────────────
         self.tray_icon: Optional[Any] = None
         threading.Thread(target=lambda: setattr(
             self, 'tray_icon', _setup_tray_icon(self)), daemon=False).start()
-        print("[HermesEngine] tray thread started", flush=True)
+        print("[HermesEngine] tray started", flush=True)
 
-        # ── Bindings ─────────────────────────────────────────────────
         self._tk_root.bind('<Configure>', self._on_resize)
         self._tk_root.bind('<Escape>', lambda e: self._hide_window())
         self._tk_root.bind('q', lambda e: self._hide_window())
@@ -229,18 +209,14 @@ class HermesEngine:
         self._tk_root.bind('R', lambda e: self._toggle_trails())
         print("[HermesEngine] bindings ok", flush=True)
 
-        # ── Tk timers ────────────────────────────────────────────────
         self._tk_root.protocol('WM_DELETE_WINDOW', self._hide_window)
         self._tk_root.after(100, self._tk_tick)
         print("[HermesEngine] init done", flush=True)
 
-    # ── GPU → FBO → PPM → Tk ──────────────────────────────────────
-
     def _render_frame(self) -> None:
         _t0 = time.perf_counter_ns()
-
         t = time.perf_counter()
-        w, h = self._win_w, self._win_h
+        w, h = self._tk_root.winfo_width(), self._tk_root.winfo_height()
 
         self.world.meta.t = t
         self.world.meta.w = w
@@ -249,35 +225,37 @@ class HermesEngine:
         self.world.meta.cube_oy = self._cube_oy
         self.world.meta.config = self.config
 
-        # Pipeline
         self.pipeline.run(self.world, 0.016)
         _t1 = time.perf_counter_ns()
 
-        # Depth sort
         n = self.world.sim.active_count
         px = self.world.render.projected_x[:n]
         py = self.world.render.projected_y[:n]
         pz = self.world.render.depth[:n]
         rgb_arr = self.world.render.final_rgb[:n]
         if n > 0:
-            order = np.argsort(pz)
-            px, py, rgb_arr = px[order], py[order], rgb_arr[order]
-
+            o = np.argsort(pz)
+            px, py, rgb_arr = px[o], py[o], rgb_arr[o]
         _t2 = time.perf_counter_ns()
-
         # GPU render → FBO
         self._fbo.use()
         self._gl_ctx.clear(0.0, 0.0, 1.0 / 255.0, 0.0)
         cell = max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE)))
+        self._renderer._symbol = self.config.get('symbol', 'circle')
         self._renderer.render(px, py, pz, rgb_arr, w, h, cell_size=cell)
 
-        # Readback → PPM → Tk PhotoImage
+        # Трейлы (поверх фона, под кубом — через trail_layer)
+        if self._trail_enabled and self.world.render.trail_layer is not None:
+            tx, ty, trgb = self.world.render.trail_layer
+            if len(tx) > 0:
+                t_depth = np.zeros(len(tx), dtype=np.float64)
+                self._renderer.render(tx, ty, t_depth, trgb, w, h, cell_size=1)
+
         fbo_data = self._fbo.read(components=4)
-        # fbo_data — это байты RGBA. Берём только RGB.
         arr = np.frombuffer(fbo_data, dtype=np.uint8).reshape((h, w, 4))
-        self._rgb_arr[:, :, 0] = arr[:, :, 0]  # R
-        self._rgb_arr[:, :, 1] = arr[:, :, 1]  # G
-        self._rgb_arr[:, :, 2] = arr[:, :, 2]  # B
+        self._rgb_arr[:, :, 0] = arr[:, :, 0]
+        self._rgb_arr[:, :, 1] = arr[:, :, 1]
+        self._rgb_arr[:, :, 2] = arr[:, :, 2]
         ppm_data = self._ppm_header + self._rgb_arr.tobytes()
 
         self._tk_photo = tk.PhotoImage(data=ppm_data, format='ppm')
@@ -289,15 +267,14 @@ class HermesEngine:
 
         _t3 = time.perf_counter_ns()
 
-        # HUD
-        self._fps_frame_count += 1
+        self._fps_count += 1
         now_s = time.perf_counter()
-        dt_fps = now_s - self._fps_last_time
+        dt_fps = now_s - self._fps_time
         fps = 0.0
         if dt_fps >= 0.5:
-            fps = self._fps_frame_count / dt_fps
-            self._fps_frame_count = 0
-            self._fps_last_time = now_s
+            fps = self._fps_count / dt_fps
+            self._fps_count = 0
+            self._fps_time = now_s
 
         self.monitor.log_frame(
             fps=fps,
@@ -305,8 +282,8 @@ class HermesEngine:
             sort_us=(_t2 - _t1) / 1000,
             render_us=(_t3 - _t2) / 1000,
             total_us=(_t3 - _t0) / 1000,
-            n_particles=self.world.sim.active_count,
-            bbox=None, config=self.config,
+            n_particles=n,
+            config=self.config,
         )
 
         if self._show_fps:
@@ -317,8 +294,6 @@ class HermesEngine:
                 8, 8, anchor='nw', text=txt,
                 fill=UI_ACCENT, font=('Consolas', 9), tags='hud')
 
-    # ── Tk loop ─────────────────────────────────────────────────────
-
     def _tk_tick(self) -> None:
         if not self.running:
             return
@@ -327,22 +302,19 @@ class HermesEngine:
             self.text_overlay.update(self.world, 0.016)
             self._tk_root.update_idletasks()
         except Exception as e:
-            print(f"[tk_tick] error: {e}", flush=True)
+            print(f"[tk_tick] {e}", flush=True)
             import traceback
             traceback.print_exc()
         self._tk_root.after(16, self._tk_tick)
 
-    # ── Events ──────────────────────────────────────────────────────
-
     def _on_resize(self, event: tk.Event) -> None:
         if event.widget == self._tk_root:
             w, h = event.width, event.height
-            if w != self._win_w or h != self._win_h and w > 50 and h > 50:
-                self._win_w, self._win_h = w, h
-                self._resize_buffers()
+            if w != self._rgb_arr.shape[1] or h != self._rgb_arr.shape[0]:
+                if w > 50 and h > 50:
+                    self._resize_buffers(w, h)
 
-    def _resize_buffers(self) -> None:
-        w, h = self._win_w, self._win_h
+    def _resize_buffers(self, w: int, h: int) -> None:
         self._fbo = self._gl_ctx.simple_framebuffer((w, h))
         self._rgb_arr = np.empty((h, w, 3), dtype=np.uint8)
         self._ppm_header = f'P6\n{w} {h}\n255\n'.encode()
@@ -362,22 +334,13 @@ class HermesEngine:
 
     def _toggle_draggable(self) -> None:
         self._draggable = not self._draggable
-        if self._draggable:
-            if sys.platform == 'win32':
-                import ctypes
-                hwnd = ctypes.c_void_p(self._tk_root.winfo_id())
-                user32 = ctypes.windll.user32
-                ex = user32.GetWindowLongW(hwnd, -20)
-                ex &= ~0x00000020
-                user32.SetWindowLongW(hwnd, -20, ex)
-        else:
-            if sys.platform == 'win32':
-                import ctypes
-                hwnd = ctypes.c_void_p(self._tk_root.winfo_id())
-                user32 = ctypes.windll.user32
-                ex = user32.GetWindowLongW(hwnd, -20)
-                ex |= 0x00000020
-                user32.SetWindowLongW(hwnd, -20, ex)
+        if sys.platform == 'win32':
+            import ctypes
+            hwnd = ctypes.c_void_p(self._tk_root.winfo_id())
+            user32 = ctypes.windll.user32
+            ex = user32.GetWindowLongW(hwnd, -20)
+            ex = ex & ~0x00000020 if self._draggable else ex | 0x00000020
+            user32.SetWindowLongW(hwnd, -20, ex)
 
     def _toggle_trails(self) -> None:
         self._trail_enabled = not self._trail_enabled
@@ -400,7 +363,7 @@ class HermesEngine:
             config = self.config
             root = self._tk_root
             engine = type('e', (), {'recalc': lambda s, c: self.recalc(c)})()
-            _auto_resize_window = lambda: None
+            _auto_resize_window = lambda s: None
         SettingsWindow(AppProxy())
 
     def quit_app(self) -> None:
@@ -408,8 +371,8 @@ class HermesEngine:
         save_config(self.config)
         self.config['x'] = self._tk_root.winfo_x()
         self.config['y'] = self._tk_root.winfo_y()
-        self.config['window_width'] = self._win_w
-        self.config['window_height'] = self._win_h
+        self.config['window_width'] = self._tk_root.winfo_width()
+        self.config['window_height'] = self._tk_root.winfo_height()
         if hasattr(self, 'tray_icon') and self.tray_icon is not None:
             try:
                 t = threading.Thread(target=self.tray_icon.stop, daemon=True)
