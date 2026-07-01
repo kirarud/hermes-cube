@@ -39,14 +39,14 @@ class AvatarTextSystem:
             self._start_text_display(world)
             world.meta.ai_response = ''
 
-        # Прямой ввод из speak_buffer (HTTP API)
+        # Прямой ввод из speak_buffer (HTTP API) — не зависит от ai_thinking
         buf = world.meta.speak_buffer
         if buf and buf != self._last_response:
             self._last_response = buf
             world.meta.speak_buffer = ''
             text = self._extract_text(json.dumps({"text": buf}))
             if text:
-                self._start_text_display(world)
+                self._start_text_display(world, text)
                 return
         if self.state == 'idle':
             return
@@ -75,11 +75,12 @@ class AvatarTextSystem:
             if t <= 0.02:
                 self._finish(world)
 
-    def _start_text_display(self, world: World) -> None:
+    def _start_text_display(self, world: World, text: Optional[str] = None) -> None:
         n = world.sim.active_count
         if n == 0:
             return
-        text = self._extract_text(world.meta.ai_response)
+        if text is None:
+            text = self._extract_text(world.meta.ai_response)
         if not text:
             return
         print(f"[AvatarText] → \"{text[:60]}...\" ({len(text)} chars)", flush=True)
