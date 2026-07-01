@@ -141,6 +141,7 @@ class TextOverlaySystem:
         if self.window:
             self.window.deiconify()
             self.window.lift()
+            self.window.attributes('-topmost', True)
         self._running = True
 
     def _hide(self) -> None:

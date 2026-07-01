@@ -99,9 +99,13 @@ class AISystem:
         world.meta.ai_thinking = True
 
         def _do_ai(history: list) -> None:
-            response = ai_chat(text, history=history)
-            world.meta.ai_response = response
-            world.meta.chat_history.append({"role": "ai", "text": response})
-            world.meta.ai_thinking = False
+            try:
+                response = ai_chat(text, history=history)
+                world.meta.ai_response = response
+                world.meta.chat_history.append({"role": "ai", "text": response})
+            except Exception as e:
+                world.meta.ai_response = json.dumps({"mood": "idle", "text": f"⚠️ {e}", "color_hue": 0.0})
+            finally:
+                world.meta.ai_thinking = False
 
         threading.Thread(target=_do_ai, args=(world.meta.chat_history,), daemon=True).start()

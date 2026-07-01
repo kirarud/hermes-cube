@@ -6,8 +6,11 @@
 Пишет:
   meta.mood — 'idle' | 'thinking' | 'speaking' | 'happy' | 'sad'
   meta.color_shift — 0.0-1.0 HSV shift
+  meta.config — pulse_rate, pulse_amplitude, rotation_speed
 
 Чистая функция: не вызывает AI, не работает с сетью.
+
+Memo: не сбрасывает mood при пустом ответе — хранит последнее.
 """
 
 from __future__ import annotations
@@ -22,16 +25,19 @@ from core.ai_constants import AI_MOODS
 class MoodSystem:
     """Определяет настроение по ответу AI.
 
-    Если ответ пустой — idle.
-    Если ответ содержит JSON — парсит mood/color_hue.
-    Иначе — keyword-based fallback.
+    Если ответ пустой — не меняет текущее настроение (stateful).
     """
+    
+    def __init__(self) -> None:
+        self._last_mood: str = 'idle'
+        self._last_color_shift: float = 0.0
 
     def update(self, world: World, dt: float) -> None:
         response = world.meta.ai_response
         if not response:
-            world.meta.mood = 'idle'
-            world.meta.color_shift = 0.0
+            # Не сбрасываем на idle — оставляем последнее настроение
+            world.meta.mood = self._last_mood
+            world.meta.color_shift = self._last_color_shift
             return
 
         mood, color_shift, display_text = self._analyze(response)
@@ -42,13 +48,15 @@ class MoodSystem:
         else:
             world.meta.ai_response = ''
 
+        self._last_mood = mood
+        self._last_color_shift = color_shift
+
         world.meta.mood = mood
         world.meta.color_shift = color_shift
 
-        # Применить параметры настроения в конфиг (проекция/анимация читают meta.config)
+        # Применить параметры настроения в конфиг
         mood_params = AI_MOODS.get(mood)
         if mood_params:
-            # Через meta.config — projection и color смотрят сюда
             cfg = world.meta.config
             for key in ('pulse_rate', 'pulse_amplitude', 'rotation_speed'):
                 if key in mood_params:
@@ -57,7 +65,6 @@ class MoodSystem:
     @staticmethod
     def _analyze(text: str) -> tuple[str, float, str]:
         """Проанализировать текст и вернуть (mood, color_shift, display_text)."""
-        # Попробовать JSON
         cleaned = text.strip()
         if cleaned.startswith('```'):
             cleaned = cleaned.strip('` \n')
@@ -75,7 +82,6 @@ class MoodSystem:
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
-        # Keyword fallback
         mood = MoodSystem._keyword_mood(text)
         shift = AI_MOODS.get(mood, AI_MOODS['idle'])['color_shift']
         return mood, shift, text
