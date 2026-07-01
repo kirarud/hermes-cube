@@ -31,6 +31,10 @@ def _rebuild(world: World, density: int) -> None:
     pts = _generate_cube_grid(density)
     n = len(pts)
 
+    # Если массив слишком мал — ресайзим мир
+    if n > world.sim.pool_size:
+        world.resize_pool(n)
+
     world.sim.active_count = n
     world.sim.base_position[:n] = pts
     world.sim.morphed[:n] = pts

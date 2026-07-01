@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
-"""main.py — Hermes Engine v3 entry point (GPU overlay).
+"""main.py — Hermes Engine v3 entry point (GPU → FBO → DIB overlay).
 
-Заменяет Tkinter canvas на OpenGL overlay окно.
-Tkinter остаётся (withdrawn) для SettingsWindow, трея и ввода.
-
-Жизненный цикл:
-  1. Tk (withdrawn) — трей, настройки, горячие клавиши
-  2. GpuWindow — прозрачное OpenGL-окно поверх всего
-  3. World — данные частиц
-  4. Pipeline — Sim → FX → View
-  5. GpuRenderer — рендер напрямую в OpenGL окно
-  6. Горячие клавиши через Win32 hook → проброс в Tk
-
-Производительность: 800-1000 FPS (864 частиц, RTX 2070 SUPER)
+Архитектура:
+  1. GPU рендерит instanced quads в FBO (moderngl через GpuWindowSystem)
+  2. PBO readback → memmove → DIB → UpdateLayeredWindow (60 FPS)
+  3. Win32 прозрачное окно с color-key — click-through, topmost
+  4. Tk (withdrawn) — трей, настройки, горячие клавиши
+  5. World — данные частиц
+  6. Pipeline — Sim → FX → View
 """
 
 from __future__ import annotations
@@ -25,6 +20,8 @@ import threading
 import time
 import tkinter as tk
 from typing import Any, Dict, List, Optional
+
+print("[main.py] import complete", flush=True)
 
 # ── Single-instance lock ──────────────────────────────────────────────
 _LOCK_FILE: str = os.path.join(tempfile.gettempdir(), 'hermes_cube.lock')
@@ -69,10 +66,9 @@ from core.systems.text_overlay import TextOverlaySystem
 from core.systems.input_window import InputWindowSystem
 from core.monitor import FrameMonitor
 from char_cube import SYMBOL_SETS
-
-# GPU overlay
-from core.systems.gpu_window import GpuWindowSystem
 from core.gpu import GpuRenderer
+
+print("[main.py] imports ok", flush=True)
 
 # Tk (withdrawn) для трея и настроек
 os.environ['HERMES_LOCKED'] = '1'
@@ -80,7 +76,7 @@ from cube_app import (
     load_config, save_config, DEFAULT_CONFIG,
     MIN_CELL_SIZE, MAX_CELL_SIZE, FRAME_MS,
     _remove_tray_icon_force,
-    UI_ACCENT, SettingsWindow,
+    SettingsWindow,
 )
 
 
@@ -115,8 +111,8 @@ def _create_tray_image():
     return img
 
 
-def _setup_tray_icon_engine(app_ref: Any) -> Optional[Any]:
-    """Создать иконку трея для HermesEngine (GPU версия)."""
+def _setup_tray_icon(app_ref: Any) -> Optional[Any]:
+    """Создать иконку трея для HermesEngine."""
     import pystray
     try:
         image = _create_tray_image()
@@ -140,64 +136,72 @@ def _setup_tray_icon_engine(app_ref: Any) -> Optional[Any]:
         return None
 
 
-# Гарантированная очистка трея при любом завершении
-atexit.register(_remove_tray_icon_force)
-
-# Win32 key constants (проброс в Tk)
-WM_KEYDOWN = 0x0100
+# _remove_tray_icon_force уже зарегистрирован в cube_app.py при импорте
 
 
 class HermesEngine:
-    """Hermes Engine v3 — GPU overlay, Tk withdrawn.
+    """Hermes Engine v3 — GPU → FBO → DIB overlay, Tk только для UI.
 
-    Владеет: GpuWindow (OpenGL), Tk (withdrawn), World, Pipeline.
+    Владеет: GpuWindowSystem (Win32 DIB overlay), Tk (трей/настройки),
+    World, Pipeline, трей, SettingsWindow.
     """
 
-    VK_MAP = {
-        0x53: 's', 0x43: 'c', 0x54: 't', 0x52: 'r',
-        0x48: 'h', 0x51: 'q', 0x47: 'g', 0x41: 'a',
-        0x50: 'p',  # P = FPS toggle
-    }
 
     def __init__(self) -> None:
+        print("[HermesEngine] init start", flush=True)
         self.config: Dict[str, Any] = load_config()
+        print("[HermesEngine] config loaded", flush=True)
 
-        # ── Tk (withdrawn) — трей и SettingsWindow ───────────────────
+        # ── Размеры окна ─────────────────────────────────────────────
+        self._win_w: int = self.config.get('window_width', 700)
+        self._win_h: int = self.config.get('window_height', 550)
+        win_x: int = self.config.get('x', 100)
+        win_y: int = self.config.get('y', 100)
+
+        # ── Tk root (withdrawn — трей, настройки, input) ─────────────
         self._tk_root = tk.Tk()
+        self._tk_root.title('♢ Hermes Cube')
         self._tk_root.withdraw()
+        print("[HermesEngine] tk root created (withdrawn)", flush=True)
 
-        # ── GPU overlay ──────────────────────────────────────────────
-        self.gpu_win = GpuWindowSystem()
-        self.gpu_win.on_key = self._on_gpu_key
-        self.gpu_win.on_quit = self.quit_app
+        # ── GPU Window (DIB overlay) ─────────────────────────────────
+        from core.systems.gpu_window import GpuWindowSystem
+        self.win: GpuWindowSystem = GpuWindowSystem(
+            width=self._win_w, height=self._win_h,
+            x=win_x, y=win_y)
+        print("[HermesEngine] gpu window created", flush=True)
 
-        # Установить OpenGL контекст текущим
-        self.gpu_win.make_current()
-
-        # ── GpuRenderer ──────────────────────────────────────────────
-        self.renderer = GpuRenderer()
-        if not self.renderer.init_from_context(self.gpu_win.ctx):
-            print("[GPU] Fallback failed — CPU fallback not yet implemented!")
+        self._renderer = GpuRenderer()
+        if not self._renderer.init_from_context(self.win.ctx):
+            print("[GPU] Shader init failed!")
             sys.exit(1)
+        print("[HermesEngine] gpu renderer init ok", flush=True)
+
+        # ── Keyboard через GpuWindow ────────────────────────────────
+        self.win.on_key = self._on_gl_key
+        print("[HermesEngine] keyboard bindings ok", flush=True)
 
         # ── World ────────────────────────────────────────────────────
-        self.world: World = World.create(
-            self.config,
-            n_particles=self.config['particle_density'] ** 2 * 6,
-        )
+        n_particles = self.config['particle_density'] ** 2 * 6
+        self.world: World = World.create(self.config, n_particles=n_particles)
+        self._renderer.upload(self.world.sim.active_count)
+        print(f"[HermesEngine] world created: {n_particles} particles", flush=True)
 
         # ── Pipeline ─────────────────────────────────────────────────
         self.pipeline = build_default_pipeline()
+        print("[HermesEngine] pipeline ok", flush=True)
 
-        # ── Render Graph (только CPU fallback, GPU минует его) ──────
+        # ── Render Graph ─────────────────────────────────────────────
         self.render_graph = RenderGraph()
         self.render_graph.add_pass(TrailPass())
         self.render_graph.add_pass(GeometryPass())
+        print("[HermesEngine] render graph ok", flush=True)
 
         # ── AI Systems ───────────────────────────────────────────────
         self.text_overlay = TextOverlaySystem(self._tk_root)
         self.input_win = InputWindowSystem(self._tk_root)
         self.input_win.connect_world(self.world)
+        print("[HermesEngine] ai systems ok", flush=True)
 
         # ── State ────────────────────────────────────────────────────
         self.running: bool = True
@@ -213,67 +217,58 @@ class HermesEngine:
         self.monitor = FrameMonitor()
         self._fps_frame_count: int = 0
         self._fps_last_time: float = time.perf_counter()
+        print("[HermesEngine] state initialized", flush=True)
 
         # ── Tray ─────────────────────────────────────────────────────
         self.tray_icon: Optional[Any] = None
         threading.Thread(target=lambda: setattr(
-            self, 'tray_icon', _setup_tray_icon_engine(self)), daemon=False).start()
+            self, 'tray_icon', _setup_tray_icon(self)), daemon=False).start()
+        print("[HermesEngine] tray thread started", flush=True)
 
-        # ── Tk timers (для SettingsWindow, AI overlay) ──────────────
+        # ── Tk timers ────────────────────────────────────────────────
         self._tk_root.after(100, self._tk_tick)
+        print("[HermesEngine] init done", flush=True)
 
-    # ── GPU render loop ──────────────────────────────────────────────
+    # ── GPU render (вызывается из _tk_tick) ──────────────────────────
 
-    def _render_loop(self) -> None:
-        """Главный рендер-луп. Запускается вручную из run()."""
-        while self.running:
-            _t0 = time.perf_counter_ns()
+    def _render_frame(self) -> None:
+        _t0 = time.perf_counter_ns()
 
-            # Обновить мир
-            t = time.perf_counter()
-            w, h = self.gpu_win.w, self.gpu_win.h
-            if w < 10 or h < 10:
-                time.sleep(0.001)
-                continue
+        t = time.perf_counter()
+        w, h = self.win.w, self.win.h
 
-            self.world.meta.t = t
-            self.world.meta.w = w
-            self.world.meta.h = h
-            self.world.meta.cube_ox = self._cube_ox
-            self.world.meta.cube_oy = self._cube_oy
-            self.world.meta.config = self.config
+        self.world.meta.t = t
+        self.world.meta.w = w
+        self.world.meta.h = h
+        self.world.meta.cube_ox = self._cube_ox
+        self.world.meta.cube_oy = self._cube_oy
+        self.world.meta.config = self.config
 
-            # Pipeline
-            self.pipeline.run(self.world, 0.016)
-            _t1 = time.perf_counter_ns()
+        # Pipeline
+        self.pipeline.run(self.world, 0.016)
+        _t1 = time.perf_counter_ns()
 
-            # Depth sort (пока на CPU — GPU не умеет painter's order)
-            n = self.world.sim.active_count
-            px = self.world.render.projected_x[:n]
-            py = self.world.render.projected_y[:n]
-            pz = self.world.render.depth[:n]
-            rgb_arr = self.world.render.final_rgb[:n]
-            if n > 0:
-                order = np.argsort(pz)
-                px, py, rgb_arr = px[order], py[order], rgb_arr[order]
+        # Depth sort
+        n = self.world.sim.active_count
+        px = self.world.render.projected_x[:n]
+        py = self.world.render.projected_y[:n]
+        pz = self.world.render.depth[:n]
+        rgb_arr = self.world.render.final_rgb[:n]
+        if n > 0:
+            order = np.argsort(pz)
+            px, py, rgb_arr = px[order], py[order], rgb_arr[order]
 
-            _t2 = time.perf_counter_ns()
+        _t2 = time.perf_counter_ns()
 
-            # GPU render
-            self.gpu_win.make_current()
-            self.gpu_win.clear()
-            self.renderer.render(px, py, pz, rgb_arr, w, h,
-                                 cell_size=max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE))))
-            self.gpu_win.swap_buffers()
-            self.gpu_win.pump_messages()
+        # GPU render → FBO → DIB overlay (через GpuWindowSystem)
+        self.win.make_current()
+        cell = max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE)))
+        self._renderer.render(px, py, pz, rgb_arr, w, h, cell_size=cell)
+        self.win.swap_buffers()
 
-            _t3 = time.perf_counter_ns()
+        _t3 = time.perf_counter_ns()
 
-            # HUD (через Tk withdraw — временный fallback, потом GL-шрифты)
-            self._update_hud(t, _t0, _t1, _t2, _t3)
-
-    def _update_hud(self, t: float, t0: int, t1: int, t2: int, t3: int) -> None:
-        """Обновить FPS монитор."""
+        # Monitor (без HUD на canvas — всё через DIB)
         self._fps_frame_count += 1
         now_s = time.perf_counter()
         dt_fps = now_s - self._fps_last_time
@@ -285,59 +280,60 @@ class HermesEngine:
 
         self.monitor.log_frame(
             fps=fps,
-            pipeline_us=(t1 - t0) / 1000,
-            sort_us=(t2 - t1) / 1000,
-            render_us=(t3 - t2) / 1000,
-            total_us=(t3 - t0) / 1000,
+            pipeline_us=(_t1 - _t0) / 1000,
+            sort_us=(_t2 - _t1) / 1000,
+            render_us=(_t3 - _t2) / 1000,
+            total_us=(_t3 - _t0) / 1000,
             n_particles=self.world.sim.active_count,
             bbox=None,
             config=self.config,
         )
 
-    # ── Tk loop (для SettingsWindow, AI overlay) ────────────────────
+    # ── Tk loop ─────────────────────────────────────────────────────
 
     def _tk_tick(self) -> None:
-        """Tik-tak для Tk: события SettingsWindow, AI overlay."""
         if not self.running:
             return
         try:
-            # AI text overlay (рендерится через Tk, поверх GPU)
+            self.win.pump_messages()
+            self._render_frame()
             self.text_overlay.update(self.world, 0.016)
             self._tk_root.update_idletasks()
-
-            # Mood change
             if self.world.meta.mood != self._last_mood:
                 self._last_mood = self.world.meta.mood
-                # Показываем на GPU overlay? Потом.
-                pass
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[tk_tick] error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
         self._tk_root.after(16, self._tk_tick)
 
-    # ── GPU Key handler ──────────────────────────────────────────────
+    # ── Events ──────────────────────────────────────────────────────
 
-    def _on_gpu_key(self, vk: int) -> None:
-        """Обработка клавиш из Win32 hook."""
-        key = self.VK_MAP.get(vk)
-        if key == 'h' or key == 'q':
-            self.gpu_win.hide()
-        elif key == 's':
+    def _on_gl_key(self, keycode: int) -> None:
+        if keycode == 0x1B:  # Escape
+            self.win.hide()
+        elif keycode == 0x48 or keycode == 0x51:  # H, Q
+            self.win.hide()
+        elif keycode == 0x53:  # S
             self.show_settings()
-        elif key == 'c':
+        elif keycode == 0x43:  # C
             self.input_win.toggle()
-        elif key == 't':
+        elif keycode == 0x54:  # T
             self._toggle_draggable()
-        elif key == 'r':
+        elif keycode == 0x52:  # R
             self._toggle_trails()
 
-    # ── Public interface ─────────────────────────────────────────────
+    # ── Public interface ────────────────────────────────────────────
 
     def toggle_window(self) -> None:
-        self.gpu_win.toggle_visible()
+        self.win.toggle_visible()
+
+    def _hide_window(self) -> None:
+        self.win.hide()
 
     def _toggle_draggable(self) -> None:
         self._draggable = not self._draggable
-        self.gpu_win.set_clickthrough(not self._draggable)
+        self.win.set_clickthrough(not self._draggable)
 
     def _toggle_trails(self) -> None:
         self._trail_enabled = not self._trail_enabled
@@ -347,14 +343,22 @@ class HermesEngine:
 
     def recalc(self, cfg: Dict[str, Any]) -> None:
         import core.systems.grid_generator as gg
-        self.world.meta.config = cfg
-        gg.update(self.world, 0.042)
+        world = self.world
+        old_count = world.sim.active_count
+        world.meta.config = cfg
+        gg.update(world, 0.042)
+        if world.sim.active_count != old_count:
+            self._renderer.upload(world.sim.active_count)
 
     def show_settings(self) -> None:
-        """Показать SettingsWindow через Tk (GPU окно позади)."""
-        # Tk root уже существует — создаём Toplevel
-        win = tk.Toplevel(self._tk_root)
-        SettingsWindow.__init__(None, self)  # некрасиво, но работает
+        """Показать SettingsWindow."""
+        class AppProxy:
+            __init__ = lambda s: None
+            config = self.config
+            root = self._tk_root
+            engine = type('e', (), {'recalc': lambda s, c: self.recalc(c)})()
+            _auto_resize_window = lambda: None
+        SettingsWindow(AppProxy())
 
     def quit_app(self) -> None:
         self.running = False
@@ -368,18 +372,20 @@ class HermesEngine:
                 pass
         _remove_tray_icon_force()
         self.text_overlay.close()
-        self.gpu_win.destroy()
-        self.renderer.destroy()
+        self._renderer.destroy()
+        self.win.destroy()
         try:
             self._tk_root.quit()
+            self._tk_root.destroy()
         except Exception:
             pass
 
     def run(self) -> None:
-        """Запустить engine: показать GPU окно, войти в render loop."""
-        self.gpu_win.show()
-        # Render loop в этом потоке
-        self._render_loop()
+        """Запустить engine: показать окно, войти в mainloop."""
+        self.win.show()
+        self._tk_root.after(100, self._tk_tick)
+        print("♢ Hermes Cube (GPU → DIB overlay) — H/Q/Esc = скрыть, S = настройки", flush=True)
+        self._tk_root.mainloop()
 
 
 if __name__ == '__main__':

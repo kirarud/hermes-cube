@@ -59,14 +59,26 @@ _UpdateLayeredWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
     ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32]
 _UpdateLayeredWindow.restype = ctypes.c_bool
 
+_SetWindowPos = ctypes.windll.user32.SetWindowPos
+_SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+_SetWindowPos.restype = ctypes.c_bool
+
 _CreateCompatibleDC = ctypes.windll.gdi32.CreateCompatibleDC
 _DeleteDC = ctypes.windll.gdi32.DeleteDC
 _CreateDIBSection = ctypes.windll.gdi32.CreateDIBSection
 _CreateDIBSection.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32]
 _CreateDIBSection.restype = ctypes.c_void_p
-_DeleteObject = ctypes.windll.gdi32.DeleteObject
 _SelectObject = ctypes.windll.gdi32.SelectObject
+_SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_SelectObject.restype = ctypes.c_void_p
 _SwapBuffers = ctypes.windll.gdi32.SwapBuffers
+_SwapBuffers.argtypes = [ctypes.c_void_p]
+_SwapBuffers.restype = ctypes.c_bool
+
+_DeleteObject = ctypes.windll.gdi32.DeleteObject
+_DeleteObject.argtypes = [ctypes.c_void_p]
+_DeleteObject.restype = ctypes.c_bool
 
 WS_POPUP = 0x80000000
 WS_VISIBLE = 0x10000000
@@ -136,7 +148,8 @@ class GpuWindowSystem:
 
     WND_CLASS: str = 'HermesEngineGL'
 
-    def __init__(self) -> None:
+    def __init__(self, width: Optional[int] = None, height: Optional[int] = None,
+                 x: int = 0, y: int = 0, clickthrough: bool = True) -> None:
         self._hwnd: Optional[int] = None
         self._dc: Optional[int] = None  # Window DC
         self._mem_dc: Optional[int] = None  # Memory DC for DIB
@@ -146,9 +159,11 @@ class GpuWindowSystem:
         self._fbo: Any = None
         self._moderngl: Any = None
 
-        self._width: int = _GetSystemMetrics(SM_CXSCREEN)
-        self._height: int = _GetSystemMetrics(SM_CYSCREEN)
-        self._clickthrough: bool = True
+        self._width: int = width if width else _GetSystemMetrics(SM_CXSCREEN)
+        self._height: int = height if height else _GetSystemMetrics(SM_CYSCREEN)
+        self._start_x: int = x
+        self._start_y: int = y
+        self._clickthrough: bool = clickthrough
         self._visible: bool = False
 
         # Callbacks
@@ -178,7 +193,7 @@ class GpuWindowSystem:
         hwnd = _CreateWindowExW(
             ex_style, self.WND_CLASS, '♢ Hermes Cube',
             WS_POPUP | WS_VISIBLE,
-            0, 0, self._width, self._height,
+            self._start_x, self._start_y, self._width, self._height,
             None, None, hinst, None,
         )
         if not hwnd:
@@ -332,6 +347,26 @@ class GpuWindowSystem:
             ex = _GetWindowLongW(self._hwnd, -20)
             ex = ex | WS_EX_TRANSPARENT if on else ex & ~WS_EX_TRANSPARENT
             _SetWindowLongW(self._hwnd, -20, ex)
+
+    def resize(self, w: int, h: int, x: int = 0, y: int = 0) -> None:
+        """Изменить размер окна, FBO и DIB."""
+        self._width = w
+        self._height = h
+        self._start_x = x
+        self._start_y = y
+        if self._hwnd:
+            _SetWindowPos(self._hwnd, None, x, y, w, h,
+                          0x0004 | 0x0020)  # SWP_NOZORDER | SWP_NOACTIVATE
+        # Recreate FBO
+        self._fbo = self._gl_ctx.simple_framebuffer((w, h))
+        # Recreate DIB
+        if self._dib_bitmap:
+            _DeleteObject(self._dib_bitmap)
+            self._dib_bitmap = None
+        if self._mem_dc:
+            _DeleteDC(self._mem_dc)
+            self._mem_dc = None
+        self._init_dib()
 
     def pump_messages(self) -> None:
         msg = MSG()
