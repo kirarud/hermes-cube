@@ -81,20 +81,22 @@ class AvatarTextSystem:
         if n_used == 0:
             return
 
-        # lerp base_position → text_position
-        for i in range(n_used):
-            world.sim.world_position[i] = self._start_base[i] * (1.0 - t) + self._text_pos[i] * t
+        # Векторизованный lerp — без Python-цикла
+        world.sim.world_position[:n_used] = (
+            self._start_base[:n_used] * (1.0 - t) + self._text_pos[:n_used] * t
+        )
         if n_used < n:
             world.sim.world_position[n_used:] = self._start_base[n_used:]
 
-        # cube_scale: плавно увеличиваем для текста
+        # cube_scale
         cfg = world.meta.config
         cfg['cube_scale'] = self._original_scale * (1.0 - t) + self._text_scale * t
 
-        # Цвета
+        # Цвета — векторизованно
         if self._start_colors is not None:
-            for i in range(n_used):
-                world.sim.color[i] = self._start_colors[i] * (1.0 - t) + np.array([220, 230, 255]) * t
+            s = 1.0 - t
+            target = np.array([220.0, 230.0, 255.0], dtype=np.float64)
+            world.sim.color[:n_used] = self._start_colors[:n_used] * s + target * t
 
     def _apply_float(self, world: World) -> None:
         """Лёгкое покачивание букв."""
@@ -103,8 +105,7 @@ class AvatarTextSystem:
             return
         n_used = min(n, len(self._text_pos))
         wave = np.sin(self._float_time * 1.5 + np.arange(n_used) * 0.7) * 0.015
-        for i in range(n_used):
-            world.sim.world_position[i, 1] += wave[i]
+        world.sim.world_position[:n_used, 1] += wave
 
     def _start_text_display(self, world: World) -> None:
         n = world.sim.active_count
