@@ -54,7 +54,21 @@ def build_atlas(font_size: int = 7) -> Tuple[bytes, Dict[str, NDArray[np.int32]]
                 symbol_to_idx[ch] = len(all_symbols)
                 all_symbols.append(ch)
 
+    # Добавляем те же extra символы что и в avatar_text._map_text_to_symbols
+    extra = (
+        list('abcdefghijklmnopqrstuvwxyz') +
+        list('ABCDEFGHIJKLMNOPQRSTUVWXYZ') +
+        list('0123456789') +
+        list(".,!?\u2014\u2026:;'\"()[]{}@#$%^&*+=<>/~`|\\-") +
+        list('абвгдеёжзийклмнопрстуфхцчшщъыьэюя')
+    )
+    for ch in extra:
+        if ch not in symbol_to_idx and len(all_symbols) < GRID * GRID:
+            symbol_to_idx[ch] = len(all_symbols)
+            all_symbols.append(ch)
+
     n_symbols = len(all_symbols)
+    print(f"[FontAtlas] {n_symbols} glyphs ({len(SYMBOL_SETS)} sets + extras)", flush=True)
 
     img = Image.new('RGBA', (ATLAS_W, ATLAS_H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
