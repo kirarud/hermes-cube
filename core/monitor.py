@@ -352,12 +352,7 @@ class FrameMonitor:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Константы (импортируются из main.py)
+# Константы (копируем, чтобы не было кругового импорта с cube_app)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# FRAME_MS для расчёта процента budget
-try:
-    from cube_app import FRAME_MS as _FRAME_MS
-except ImportError:
-    _FRAME_MS = 42
-FRAME_MS: int = _FRAME_MS
+FRAME_MS: int = 42  # default, main.py перезаписывает при импорте

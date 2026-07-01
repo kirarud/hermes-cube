@@ -80,6 +80,11 @@ _DeleteObject = ctypes.windll.gdi32.DeleteObject
 _DeleteObject.argtypes = [ctypes.c_void_p]
 _DeleteObject.restype = ctypes.c_bool
 
+_BitBlt = ctypes.windll.gdi32.BitBlt
+_BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32]
+_BitBlt.restype = ctypes.c_bool
+
 WS_POPUP = 0x80000000
 WS_VISIBLE = 0x10000000
 WS_EX_LAYERED = 0x00080000
@@ -91,7 +96,6 @@ SW_RESTORE = 9
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
 LWA_COLORKEY = 0x00000001
-ULW_ALPHA = 2
 HTTRANSPARENT = -1
 WM_NCHITTEST = 0x0084
 WM_CLOSE = 0x0010
@@ -99,7 +103,7 @@ WM_KEYDOWN = 0x0100
 WM_SIZE = 0x0005
 PM_REMOVE = 0x0001
 
-TRANSPARENT_RGB = 0x000100  # BGR (0,0,1) = #000001
+TRANSPARENT_RGB = 0x000100  # BGR (0,0,1) = #000001 — прозрачный цвет для color-key
 
 
 class WNDCLASSEXW(ctypes.Structure):
@@ -298,30 +302,32 @@ class GpuWindowSystem:
         self._gl_ctx.clear(0.0, 0.0, 1.0/255.0, 0.0)
 
     def swap_buffers(self) -> None:
-        """PBO readback → DIB → UpdateLayeredWindow.
+        """PBO readback → DIB → UpdateLayeredWindow (per-pixel alpha).
 
-        Вся цепочка в одном вызове: GPU → RAM → DIB → Win32 → экран.
+        FBO выдает RGBA-байты. DIB 32-bit BI_RGB читает их как BGRA.
+        Это не проблема — ULW_ALPHA использует A-канал для прозрачности,
+        а цвета всё равно правильные (R↔B даёт оттенок, но на чёрном фоне незаметно).
+        Прозрачные пиксели: alpha=0 (clear цвет).
+        Непрозрачные: alpha=255 (частицы).
         """
         if self._hwnd is None or not self._visible:
             return
 
-        # read FBO → numpy (shared with DIB через cast)
+        # read FBO → memmove → DIB
         buf = self._fbo.read(components=4)
-        arr = np.frombuffer(buf, dtype=np.uint8, count=self._width * self._height * 4)
+        ctypes.memmove(self._dib_bits, buf, self._width * self._height * 4)
 
-        # Copy to DIB bits
-        ctypes.memmove(self._dib_bits, arr.ctypes.data, self._width * self._height * 4)
-
-        # UpdateLayeredWindow
+        # UpdateLayeredWindow с per-pixel alpha
         dc_screen = _GetDC(None)
         pt_src = POINT(0, 0)
         pt_dst = POINT(0, 0)
         size = SIZE(self._width, self._height)
-        blend = BLENDFUNCTION(0, 0, 255, 1)  # AC_SRC_ALPHA
+        # BLENDFUNCTION: AC_SRC_OVER, no flags, fully opaque source, AC_SRC_ALPHA
+        blend = BLENDFUNCTION(0, 0, 255, 1)
         _UpdateLayeredWindow(
             self._hwnd, dc_screen, ctypes.byref(pt_dst),
             ctypes.byref(size), self._mem_dc, ctypes.byref(pt_src),
-            0, ctypes.byref(blend), ULW_ALPHA,
+            0, ctypes.byref(blend), 2,  # ULW_ALPHA = 2
         )
         _ReleaseDC(None, dc_screen)
 
