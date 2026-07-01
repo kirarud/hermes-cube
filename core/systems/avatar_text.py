@@ -23,11 +23,12 @@ class AvatarTextSystem:
         self.state: str = 'idle'
         self._timer: float = 0.0
         self._last_response: str = ''
+        self._original_shape: str = 'cube'
         self._original_scale: float = 0.27
         self._original_cell: int = 6
         self._original_speed: float = 0.28
-        self._text_scale: float = 0.6
-        self._text_cell: int = 9
+        self._text_scale: float = 0.5
+        self._text_cell: int = 16
         self._display_text: str = ''
         self._saved_positions: NDArray[np.float64] | None = None  # позиции куба на момент старта
 
@@ -67,10 +68,10 @@ class AvatarTextSystem:
         elif self.state == 'morph_out':
             self._timer += dt
             t = max(0.0, 1.0 - self._timer / MORPH_OUT_TIME)
-            # Lerp от текущей позиции к saved_positions напрямую в world_position
-            self._write_lerp_out(world, t)
+            cfg['morph_progress'] = t
             cfg['cube_scale'] = self._original_scale * t + self._text_scale * (1.0 - t)
             cfg['cell_size'] = self._text_cell + int((self._original_cell - self._text_cell) * (1.0 - t))
+            cfg['rotation_speed'] = self._original_speed * (1.0 - t)
             if t <= 0.02:
                 self._finish(world)
 
@@ -110,7 +111,7 @@ class AvatarTextSystem:
 
     def _finish(self, world: World) -> None:
         cfg = world.meta.config
-        cfg['shape_preset'] = 'cube'
+        cfg['shape_preset'] = self._original_shape
         cfg['morph_progress'] = 0.0
         cfg['cube_scale'] = self._original_scale
         cfg['cell_size'] = self._original_cell

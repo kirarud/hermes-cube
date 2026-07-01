@@ -112,9 +112,9 @@ class GpuRenderer:
     """
 
     MAX_PARTICLES: int = 32768
-    ATLAS_W: int = 128
-    ATLAS_H: int = 128
-    CELL_SIZE: int = 8
+    ATLAS_W: int = 256
+    ATLAS_H: int = 256
+    CELL_SIZE: int = 16
     ATLAS_GRID: int = 16  # 16×16 ячеек
 
     def __init__(self) -> None:
