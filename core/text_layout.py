@@ -22,13 +22,10 @@ from numpy.typing import NDArray
 MAX_WIDTH: float = 0.0  # 0 = растянуть до 0.95 в обе стороны
 
 # Отступы между строками (в единицах [-1,1])
-LINE_HEIGHT: float = 0.14
+LINE_HEIGHT: float = 0.12
 
-# Расстояние между символами (динамическое — подгоняется под ширину)
-CHAR_SPACING: float = 0.0  # 0 = авто-подгонка
-
-# Максимальная ширина строки в долях [-1,1]
-FILL_WIDTH: float = 0.85
+# Расстояние между символами (не динамическое — фиксированное)
+CHAR_SPACING: float = 0.08
 
 # Предельное количество строк (текст обрезается)
 MAX_LINES: int = 6
@@ -67,19 +64,11 @@ def layout_text(text: str, n_particles: int) -> Tuple[NDArray[np.float64],
     # Auto-fit: считаем колонки и строки
     n_cols, n_rows, lines = _fit_lines(chars, n_chars)
 
-    # Динамический CHAR_SPACING: растягиваем текст на FILL_WIDTH
-    if CHAR_SPACING > 0:
-        spacing = CHAR_SPACING
-    elif n_cols > 1:
-        spacing = FILL_WIDTH * 2.0 / (n_cols - 1)
-    else:
-        spacing = FILL_WIDTH * 2.0
-
     # Центрируем блок текста
-    block_w = n_cols * spacing
-    block_h = n_rows * LINE_HEIGHT
-    offset_x = -block_w / 2.0 + spacing / 2.0
-    offset_y = block_h / 2.0 - LINE_HEIGHT / 2.0
+    block_w = (n_cols - 1) * CHAR_SPACING if n_cols > 1 else 0.0
+    block_h = (n_rows - 1) * LINE_HEIGHT if n_rows > 1 else 0.0
+    offset_x = -block_w / 2.0
+    offset_y = block_h / 2.0
 
     # Генерируем позиции
     positions = np.zeros((n_particles, 3), dtype=np.float64)
@@ -95,7 +84,7 @@ def layout_text(text: str, n_particles: int) -> Tuple[NDArray[np.float64],
         for col_idx, ch in enumerate(row_chars):
             if idx >= n_particles:
                 break
-            x = offset_x + col_idx * spacing
+            x = offset_x + col_idx * CHAR_SPACING
             y = offset_y - row_idx * LINE_HEIGHT
             z = 0.0
 
@@ -113,6 +102,16 @@ def layout_text(text: str, n_particles: int) -> Tuple[NDArray[np.float64],
         positions[n_used:, :] = 0.0
         positions[n_used:, 2] = HIDDEN_Z
         char_indices[n_used:] = 0
+
+    # Нормализация: растягиваем блок текста до [-1, 1]
+    if n_used > 1:
+        max_extent = max(
+            abs(positions[:n_used, 0]).max(),
+            abs(positions[:n_used, 1]).max(),
+        )
+        if max_extent > 0.01:
+            scale = 0.85 / max_extent  # 85% экрана
+            positions[:n_used, :2] *= scale
 
     # Добавляем лёгкий Z-разброс для визуальной глубины
     rng = np.random.default_rng(42)
