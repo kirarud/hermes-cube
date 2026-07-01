@@ -17,10 +17,10 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from char_cube import SYMBOL_SETS
 
-CELL: int = 16
+CELL: int = 8
 GRID: int = 16  # 16×16 = 256 слотов
-ATLAS_W: int = CELL * GRID  # 256
-ATLAS_H: int = CELL * GRID  # 256
+ATLAS_W: int = CELL * GRID  # 128
+ATLAS_H: int = CELL * GRID  # 128
 
 
 def _find_font() -> Optional[str]:
@@ -38,7 +38,7 @@ def _find_font() -> Optional[str]:
     return None
 
 
-def build_atlas(font_size: int = 14) -> Tuple[bytes, Dict[str, NDArray[np.int32]]]:
+def build_atlas(font_size: int = 7) -> Tuple[bytes, Dict[str, NDArray[np.int32]]]:
     font_path = _find_font()
     try:
         font = ImageFont.truetype(font_path, font_size) if font_path else None
