@@ -67,7 +67,11 @@ class AvatarTextSystem:
         cfg['morph_progress'] = 0.0
         cfg['shape_preset'] = 'text'
         cfg['rotation_speed'] = 0.0
+        cfg['char_mode'] = 'symbols'
         world.meta.text_mode = True
+
+        # Per-particle символы из текста
+        self._map_text_to_symbols(world, text, n_used)
         self.state = 'morph_in'
         self._timer = 0.0
 
@@ -76,9 +80,36 @@ class AvatarTextSystem:
         cfg['morph_progress'] = 0.0
         cfg['shape_preset'] = 'cube'
         cfg['rotation_speed'] = 0.28
+        cfg['char_mode'] = 'dots'
         world.meta.text_mode = False
         self.state = 'idle'
         self._last_response = ''
+
+    def _map_text_to_symbols(self, world: World, text: str, n_used: int) -> None:
+        """Назначить каждой частице индекс символа из font atlas."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+        from char_cube import SYMBOL_SETS
+        char_map = {}
+        for name, syms in SYMBOL_SETS.items():
+            for ch in syms:
+                if ch not in char_map and len(char_map) < 256:
+                    char_map[ch] = len(char_map)
+        extra = (
+            list('abcdefghijklmnopqrstuvwxyz') +
+            list('ABCDEFGHIJKLMNOPQRSTUVWXYZ') +
+            list('0123456789') +
+            list(".,!?—…:;'\"()[]{}@#$%^&*+=<>/~`|\\- ") +
+            list('абвгдеёжзийклмнопрстуфхцчшщъыьэюя')
+        )
+        for ch in extra:
+            if ch not in char_map and len(char_map) < 256:
+                char_map[ch] = len(char_map)
+        text_chars = list(text)
+        for i in range(min(n_used, len(text_chars))):
+            world.sim.symbol_idx[i] = char_map.get(text_chars[i], 0)
+        if n_used < world.sim.active_count:
+            world.sim.symbol_idx[n_used:] = 0
 
     @staticmethod
     def _extract_text(raw):
