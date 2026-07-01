@@ -246,9 +246,10 @@ class HermesEngine:
         self.pipeline.run(self.world, 0.016)
         _t1 = time.perf_counter_ns()
 
-        # Аватар: финальные позиции частиц (после pipeline, перед проекцией)
-        if self.avatar_text:
-            self.avatar_text.apply_animated(self.world)
+        # Аватар: запись позиций в world_position (после rotation, перед projection)
+        if self.avatar_text and self.world.meta.text_mode:
+            self.avatar_text._set_morph(self.world,
+                self.world.meta.config.get('morph_progress', 0.0))
 
         n = self.world.sim.active_count
         px = self.world.render.projected_x[:n]

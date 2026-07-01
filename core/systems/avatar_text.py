@@ -1,9 +1,10 @@
 """systems/avatar_text.py — Аватар: текст из частиц куба.
 
-Самостоятельно управляет morph-переходом, не полагаясь на pipeline.
-Использует текущую world_position (повёрнутую) как стартовую точку.
+Полный контроль над позициями частиц во время текстового режима.
+Записывает напрямую в world_position (вместо animated),
+отключает rotation и animation в конфиге.
 
-Состояния: idle → morph_in → display → morph_out → idle
+Никакого параллельного pipeline morph — lerp руками.
 """
 
 from __future__ import annotations
@@ -34,10 +35,9 @@ class AvatarTextSystem:
         self._original_rotation_speed: float = 0.28
         self._text_scale: float = get_text_scale_override()
         self._float_time: float = 0.0
-        # Стартовая позиция для lerp (сохраняется при начале morph_in)
         self._start_pos: NDArray[np.float64] | None = None
-        # Целевая позиция текста
         self._target_pos: NDArray[np.float64] | None = None
+        self._start_colors: NDArray[np.float64] | None = None
 
     def update(self, world: World, dt: float) -> None:
         response = world.meta.ai_response
@@ -46,60 +46,68 @@ class AvatarTextSystem:
             self._start_text_display(world)
             world.meta.ai_response = ''
 
-        if self.state == 'morph_in':
-            self._tick_morph_in(world, dt)
-        elif self.state == 'display':
-            self._tick_display(world, dt)
-        elif self.state == 'morph_out':
-            self._tick_morph_out(world, dt)
-
-    def apply_animated(self, world: World) -> None:
-        """Записать финальные позиции частиц в animated.
-        Вызывается из main.py ПОСЛЕ pipeline (после rotation).
-        """
         if self.state == 'idle':
             return
 
+        if self.state == 'morph_in':
+            self._timer += dt
+            t = min(1.0, self._timer / MORPH_IN_TIME)
+            self._set_morph(world, t)
+            if t >= 1.0:
+                self.state = 'display'
+                self._timer = 0.0
+
+        elif self.state == 'display':
+            self._timer += dt
+            self._float_time += dt
+            self._set_morph(world, 1.0)
+            # Float: Y-покачивание
+            self._apply_float(world)
+            if self._timer >= HOLD_TIME:
+                self.state = 'morph_out'
+                self._timer = 0.0
+
+        elif self.state == 'morph_out':
+            self._timer += dt
+            t = max(0.0, 1.0 - self._timer / MORPH_OUT_TIME)
+            self._set_morph(world, t)
+            if t <= 0.02:
+                self._finish(world)
+
+    def _set_morph(self, world: World, t: float) -> None:
+        """Записать lerp-позицию в world_position (без pipeline morph)."""
         n = world.sim.active_count
         if n == 0 or self._target_pos is None or self._start_pos is None:
             return
 
-        n_used = min(n, len(self._target_pos))
-        progress = world.meta.config.get('morph_progress', 0.0)
+        n_used = min(n, len(self._target_pos), len(self._start_pos))
+        if n_used == 0:
+            return
 
-        if self.state == 'morph_in':
-            # Lerp от стартовой (повёрнутой) к тексту
-            t = progress
-            for i in range(n_used):
-                world.sim.animated[i] = self._start_pos[i] * (1.0 - t) + self._target_pos[i] * t
-            if n_used < n:
-                world.sim.animated[n_used:] = self._start_pos[n_used:]
-            # Масштабируем постепенно
-            self._apply_scale(world, t)
+        # Lerp в world_position (→ projection прочитает)
+        for i in range(n_used):
+            world.sim.world_position[i] = self._start_pos[i] * (1.0 - t) + self._target_pos[i] * t
+        # Остальные частицы (не текст) — держим на стартовой
+        if n_used < n:
+            world.sim.world_position[n_used:] = self._start_pos[n_used:]
 
-        elif self.state == 'display':
-            # Текст — финальная позиция + float
-            world.sim.animated[:n_used] = self._target_pos[:n_used]
-            # Float: Y-покачивание
-            wave = np.sin(self._float_time * 1.5 + np.arange(n_used) * 0.7) * 0.015
-            world.sim.animated[:n_used, 1] += wave
-            if n_used < n:
-                world.sim.animated[n_used:] = self._start_pos[n_used:]
-            self._apply_scale(world, 1.0)
-
-        elif self.state == 'morph_out':
-            # Lerp от текста к стартовой
-            t = 1.0 - progress  # 1 → 0
-            for i in range(n_used):
-                world.sim.animated[i] = self._start_pos[i] * t + self._target_pos[i] * (1.0 - t)
-            if n_used < n:
-                world.sim.animated[n_used:] = self._start_pos[n_used:]
-            self._apply_scale(world, t)
-
-    def _apply_scale(self, world: World, t: float) -> None:
-        """Плавно переключаем cube_scale между оригинальным и текстовым."""
+        # Плавный scale
         cfg = world.meta.config
         cfg['cube_scale'] = self._original_scale * (1.0 - t) + self._text_scale * t
+
+        # Цвета: плавно переключаем между оригинальным и текстовым
+        if self._start_colors is not None:
+            for i in range(n_used):
+                world.sim.color[i] = self._start_colors[i] * (1.0 - t) + np.array([220, 230, 255]) * t
+
+    def _apply_float(self, world: World) -> None:
+        """Лёгкое вертикальное покачивание букв."""
+        n = world.sim.active_count
+        if n == 0 or self._target_pos is None:
+            return
+        wave = np.sin(self._float_time * 1.5 + np.arange(min(n, len(self._target_pos))) * 0.7) * 0.02
+        for i in range(len(wave)):
+            world.sim.world_position[i, 1] += wave[i]
 
     def _start_text_display(self, world: World) -> None:
         n = world.sim.active_count
@@ -118,22 +126,20 @@ class AvatarTextSystem:
         self._original_char_mode = cfg.get('char_mode', 'dots')
         self._original_rotation_speed = float(cfg.get('rotation_speed', 0.28))
 
-        # Сохраняем текущую повёрнутую позицию как стартовую для lerp
-        n_sim = min(n, len(world.sim.world_position))
-        self._start_pos = world.sim.world_position[:n_sim].copy()
+        # Стартовая позиция = текущая повёрнутая
+        self._start_pos = world.sim.world_position[:n].copy()
 
-        # Генерируем текст
+        # Генерация раскладки
         positions, char_indices, n_used = layout_text(text, n)
         self._target_pos = positions.copy()
 
-        # Цвета
-        self._original_colors = world.sim.color[:n_sim].copy()
-        world.sim.color[:n_used] = [220, 230, 255]
+        # Сохраняем цвета
+        self._start_colors = world.sim.color[:n].copy()
 
         # Индексы символов
         world.sim.symbol_idx[:] = char_indices
 
-        # Настройки
+        # Отключаем pipeline системы
         cfg['morph_progress'] = 0.0
         cfg['cube_scale'] = self._original_scale
         cfg['char_mode'] = 'symbols'
@@ -141,7 +147,6 @@ class AvatarTextSystem:
         cfg['shape_preset'] = 'text'
         world.meta.text_mode = True
 
-        # Трейлы off
         if world.render.trail_enabled:
             world.render.trail_enabled = False
             self._trails_was_enabled = True
@@ -151,29 +156,6 @@ class AvatarTextSystem:
         self.state = 'morph_in'
         self._timer = 0.0
         self._float_time = 0.0
-
-    def _tick_morph_in(self, world: World, dt: float) -> None:
-        self._timer += dt
-        t = min(1.0, self._timer / MORPH_IN_TIME)
-        world.meta.config['morph_progress'] = t
-        if t >= 1.0:
-            world.meta.config['morph_progress'] = 1.0
-            self.state = 'display'
-            self._timer = 0.0
-
-    def _tick_display(self, world: World, dt: float) -> None:
-        self._timer += dt
-        self._float_time += dt
-        if self._timer >= HOLD_TIME:
-            self.state = 'morph_out'
-            self._timer = 0.0
-
-    def _tick_morph_out(self, world: World, dt: float) -> None:
-        self._timer += dt
-        t = max(0.0, 1.0 - self._timer / MORPH_OUT_TIME)
-        world.meta.config['morph_progress'] = t
-        if t <= 0.02:
-            self._finish(world)
 
     def _finish(self, world: World) -> None:
         cfg = world.meta.config
@@ -186,9 +168,11 @@ class AvatarTextSystem:
         world.meta.mood = 'idle'
         world.meta.color_shift = 0.0
 
-        if hasattr(self, '_original_colors'):
-            n_restore = min(len(self._original_colors), world.sim.active_count)
-            world.sim.color[:n_restore] = self._original_colors[:n_restore]
+        # Цвета
+        if self._start_colors is not None:
+            n = min(len(self._start_colors), world.sim.active_count)
+            world.sim.color[:n] = self._start_colors[:n]
+
         if getattr(self, '_trails_was_enabled', False):
             world.render.trail_enabled = True
 
@@ -196,6 +180,7 @@ class AvatarTextSystem:
         self._last_response = ''
         self._start_pos = None
         self._target_pos = None
+        self._start_colors = None
         print("[AvatarText] ← restored", flush=True)
 
     @staticmethod
