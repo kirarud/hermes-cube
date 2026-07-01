@@ -90,7 +90,7 @@ out vec4 f_color;
 uniform sampler2D u_font_tex;
 void main() {
     float ch = v_char_idx_f;
-    // 16×16 грид: ячейка (col, row)
+    // 16x16 grid: cell (col, row)
     float tx = mod(ch, 16.0);
     float ty = floor(ch / 16.0);
     vec2 tc;
@@ -98,7 +98,8 @@ void main() {
     tc.y = (ty + v_uv.y + 0.5) / 16.0;
 
     vec4 texel = texture(u_font_tex, tc);
-    f_color = vec4(v_color * texel.rgb, texel.a);
+    if (texel.a < 0.01) discard;
+    f_color = vec4(v_color, texel.a);
 }
 """
 

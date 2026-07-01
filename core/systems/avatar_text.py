@@ -12,7 +12,35 @@ from typing import Optional
 import numpy as np
 
 from core.world import World
-from core.text_layout import layout_text_mask, _build_char_to_idx
+from core.text_layout import layout_text_mask
+
+CHAR_MAP: dict[str, int] | None = None
+
+
+def _get_char_map() -> dict[str, int]:
+    global CHAR_MAP
+    if CHAR_MAP is not None:
+        return CHAR_MAP
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from char_cube import SYMBOL_SETS
+    m: dict[str, int] = {}
+    for name, syms in SYMBOL_SETS.items():
+        for ch in syms:
+            if ch not in m and len(m) < 256:
+                m[ch] = len(m)
+    extra = (
+        list('abcdefghijklmnopqrstuvwxyz') +
+        list('ABCDEFGHIJKLMNOPQRSTUVWXYZ') +
+        list('0123456789') +
+        list(".,!?—…:;'\"()[]{}@#$%^&*+=<>/~`|\\- ") +
+        list('абвгдеёжзийклмнопрстуфхцчшщъыьэюя')
+    )
+    for ch in extra:
+        if ch not in m and len(m) < 256:
+            m[ch] = len(m)
+    CHAR_MAP = m
+    return m
 
 MORPH_IN_TIME: float = 0.8
 HOLD_TIME: float = 3.5
@@ -69,9 +97,12 @@ class AvatarTextSystem:
         elif self.state == 'morph_out':
             self._timer += dt
             t = max(0.0, 1.0 - self._timer / MORPH_OUT_TIME)
-            cfg['morph_progress'] = t
+            cfg['morph_progress'] = t  # pipeline lerp text→base
             cfg['cube_scale'] = self._original_scale * t + self._text_scale * (1.0 - t)
-            cfg['cell_size'] = self._text_cell + int((6 - self._text_cell) * (1.0 - t))
+            cfg['cell_size'] = self._text_cell + int((self._original_cell - self._text_cell) * (1.0 - t))
+            cfg['rotation_speed'] = self._original_speed * (1.0 - t)
+            # Плавно восстанавливаем вращение через world_position
+            self._write_lerp_out(world, t)
             if t <= 0.02:
                 self._finish(world)
 
@@ -88,9 +119,10 @@ class AvatarTextSystem:
 
         positions, n_used, _ = layout_text_mask(text, n, font_size=48)
         world.sim.shape_cache['text'] = positions.copy()
+        self._saved_positions = world.sim.world_position[:n].copy()
 
         # Per-particle symbol indices
-        char_map = _build_char_to_idx()
+        char_map = _get_char_map()
         for i in range(min(n_used, len(text))):
             world.sim.symbol_idx[i] = char_map.get(text[i], 0)
         if n_used < n:
@@ -128,7 +160,28 @@ class AvatarTextSystem:
 
         self.state = 'idle'
         self._last_response = ''
+        self._saved_positions = None
         print("[AvatarText] done", flush=True)
+
+    def _write_lerp_out(self, world: World, t: float) -> None:
+        """lerp текста к saved_positions напрямую в world_position.
+        Вызывается каждый кадр morph_out после pipeline.run().
+        """
+        if self._saved_positions is None:
+            return
+        n = world.sim.active_count
+        text = world.sim.shape_cache.get('text')
+        if text is None:
+            return
+        n_used = min(n, len(text), len(self._saved_positions))
+        if n_used == 0:
+            return
+        # lerp: text * (1-t) + saved * t  → при t=1 куб на месте
+        world.sim.world_position[:n_used] = (
+            text[:n_used] * (1.0 - t) + self._saved_positions[:n_used] * t
+        )
+        if n_used < n:
+            world.sim.world_position[n_used:] = self._saved_positions[n_used:]
 
     @staticmethod
     def _extract_text(raw):
