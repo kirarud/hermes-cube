@@ -38,6 +38,15 @@ class MoodSystem:
         world.meta.mood = mood
         world.meta.color_shift = color_shift
 
+        # Применить параметры настроения в конфиг (проекция/анимация читают meta.config)
+        mood_params = AI_MOODS.get(mood)
+        if mood_params:
+            # Через meta.config — projection и color смотрят сюда
+            cfg = world.meta.config
+            for key in ('pulse_rate', 'pulse_amplitude', 'rotation_speed'):
+                if key in mood_params:
+                    cfg[key] = mood_params[key]
+
     @staticmethod
     def _analyze(text: str) -> tuple[str, float]:
         """Проанализировать текст и вернуть (mood, color_shift)."""

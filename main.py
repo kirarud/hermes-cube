@@ -180,6 +180,15 @@ class HermesEngine:
         self.pipeline = build_default_pipeline()
         print("[HermesEngine] pipeline ok", flush=True)
 
+        # ── AI Modules ───────────────────────────────────────────────
+        from core.systems.ai import AISystem
+        from core.systems.mood import MoodSystem
+        from core.systems.lm_autostart import LMAutoStartSystem
+        self.ai_system = AISystem()
+        self.mood_system = MoodSystem()
+        self.lm_autostart = LMAutoStartSystem()
+        print("[HermesEngine] ai modules ok", flush=True)
+
         self.text_overlay = TextOverlaySystem(self._tk_root)
         self.input_win = InputWindowSystem(self._tk_root)
         self.input_win.connect_world(self.world)
@@ -339,6 +348,14 @@ class HermesEngine:
             self._render_frame()
             self.text_overlay.update(self.world, 0.016)
             self._tk_root.update_idletasks()
+
+            # AI modules
+            if self.lm_autostart:
+                self.lm_autostart.update(self.world, 0.016)
+            if self.ai_system:
+                self.ai_system.update(self.world, 0.016)
+            if self.mood_system:
+                self.mood_system.update(self.world, 0.016)
         except Exception as e:
             print(f"[tk_tick] {e}", flush=True)
             import traceback
