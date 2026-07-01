@@ -713,23 +713,13 @@ class SettingsWindow:
         def _on_mousewheel(event: tk.Event) -> None:
             canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
 
-        def _on_mousewheel_linux(event: tk.Event) -> None:
-            canvas.yview_scroll(-1 if event.num == 4 else 1, 'units')
+        canvas.bind('<MouseWheel>', _on_mousewheel, add='+')
+        if sys.platform != 'win32':
+            canvas.bind('<Button-4>', lambda e: canvas.yview_scroll(-1, 'units'))
+            canvas.bind('<Button-5>', lambda e: canvas.yview_scroll(1, 'units'))
 
-        canvas.bind_all('<MouseWheel>', _on_mousewheel, add='+')
-        canvas.bind_all('<Button-4>', _on_mousewheel_linux, add='+')
-        canvas.bind_all('<Button-5>', _on_mousewheel_linux, add='+')
-
-        # Cleanup bindings on destroy
-        self.window.bind(
-            '<Destroy>',
-            lambda e: (
-                canvas.unbind_all('<MouseWheel>'),
-                canvas.unbind_all('<Button-4>'),
-                canvas.unbind_all('<Button-5>'),
-            ),
-            add='+',
-        )
+        # Cleanup — при destroy удаляем только canvas биндинги
+        self.window.bind('<Destroy>', lambda e: canvas.unbind('<MouseWheel>'))
 
         # ─── Content frame (parent = scroll_frame) ──────────────────
         parent = self.scroll_frame

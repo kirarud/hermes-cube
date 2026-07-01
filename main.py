@@ -56,7 +56,6 @@ from core.systems.text_overlay import TextOverlaySystem
 from core.systems.input_window import InputWindowSystem
 from core.monitor import FrameMonitor
 from core.gpu import GpuRenderer
-from char_cube import SYMBOL_SETS
 
 print("[main.py] imports ok", flush=True)
 
@@ -160,6 +159,13 @@ class HermesEngine:
             sys.exit(1)
         print("[HermesEngine] gpu renderer ok", flush=True)
 
+        # Font atlas (только при старте)
+        from core.font_atlas import build_atlas
+        atlas_rgba, char_maps = build_atlas(font_size=14)
+        self._renderer.load_font_atlas(atlas_rgba, char_maps)
+        self._char_map = char_maps
+        print("[HermesEngine] font atlas loaded", flush=True)
+
         self._rgb_arr = np.empty((h, w, 3), dtype=np.uint8)
         self._ppm_header = f'P6\n{w} {h}\n255\n'.encode()
         self._tk_photo: Optional[tk.PhotoImage] = None
@@ -243,65 +249,59 @@ class HermesEngine:
         self._gl_ctx.clear(0.0, 0.0, 1.0 / 255.0, 0.0)
         cell = max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE)))
 
-        # Если char_mode != 'dots' — рисуем символы через canvas (поверх фона)
         char_mode: str = self.config.get('char_mode', 'dots')
-        if char_mode != 'dots':
-            # Рендерим только фон через GPU (если нужно — cell для прозрачности)
-            self._renderer._symbol = 'dot'
-            self._renderer.render(px, py, pz, rgb_arr, w, h, cell_size=1)
+        using_chars = char_mode != 'dots'
 
-            # Выводим кадр на canvas как фон
-            fbo_data = self._fbo.read(components=4)
-            arr = np.frombuffer(fbo_data, dtype=np.uint8).reshape((h, w, 4))
-            self._rgb_arr[:, :, 0] = arr[:, :, 0]
-            self._rgb_arr[:, :, 1] = arr[:, :, 1]
-            self._rgb_arr[:, :, 2] = arr[:, :, 2]
-            ppm_data = self._ppm_header + self._rgb_arr.tobytes()
-            self._tk_photo = tk.PhotoImage(data=ppm_data, format='ppm')
-            if self._canvas_image is None:
-                self._canvas_image = self._canvas.create_image(
-                    0, 0, anchor='nw', image=self._tk_photo)
-            else:
-                self._canvas.itemconfig(self._canvas_image, image=self._tk_photo)
-
-            # Текст как символы поверх
-            self._canvas.delete('chars')
+        if using_chars:
+            # GPU-рендер через font atlas
             symbol_set_name: str = self.config.get('symbol_set', 'default')
-            symbols: List[str] = SYMBOL_SETS.get(symbol_set_name, SYMBOL_SETS['default'])
-            if n > 0:
-                # batch: текст с несколькими символами для каждой частицы
-                font_size = max(6, cell * 2)
-                font_name = 'Segoe UI' if all(ord(c) < 256 for c in symbols[0]) else 'Segoe UI Emoji'
-                for i in range(0, min(n, 500), max(1, n // 200)):
-                    ch = symbols[i % len(symbols)]
-                    self._canvas.create_text(
-                        int(px[i]), int(py[i]), text=ch,
-                        fill=f'#{rgb_arr[i,0]:02x}{rgb_arr[i,1]:02x}{rgb_arr[i,2]:02x}',
-                        font=(font_name, font_size), tags='chars',
-                    )
+            char_indices = self._char_map.get(symbol_set_name)
+            if char_indices is None:
+                char_indices = self._char_map.get('default', np.array([0], dtype=np.int32))
+
+            # Для каждой частицы выбираем символ
+            n_symbols = len(char_indices)
+            if n_symbols > 0:
+                sym_idx = np.arange(n, dtype=np.int32) % n_symbols
+                per_particle_indices = char_indices[sym_idx]
+            else:
+                per_particle_indices = np.zeros(n, dtype=np.int32)
+
+            self._renderer.render(
+                px, py, pz, rgb_arr, w, h, cell_size=cell,
+                use_chars=True, char_indices=per_particle_indices,
+            )
+
+            # Трейлы (через dots, маленькие)
+            if self._trail_enabled and self.world.render.trail_layer is not None:
+                tx, ty, trgb = self.world.render.trail_layer
+                if len(tx) > 0:
+                    t_depth = np.zeros(len(tx), dtype=np.float64)
+                    self._renderer.render(tx, ty, t_depth, trgb, w, h, cell_size=1)
         else:
             self._renderer._symbol = self.config.get('symbol', 'circle')
             self._renderer.render(px, py, pz, rgb_arr, w, h, cell_size=cell)
 
-            # Трейлы (поверх фона, под кубом — через trail_layer)
+            # Трейлы
             if self._trail_enabled and self.world.render.trail_layer is not None:
                 tx, ty, trgb = self.world.render.trail_layer
                 if len(tx) > 0:
                     t_depth = np.zeros(len(tx), dtype=np.float64)
                     self._renderer.render(tx, ty, t_depth, trgb, w, h, cell_size=1)
 
-            fbo_data = self._fbo.read(components=4)
-            arr = np.frombuffer(fbo_data, dtype=np.uint8).reshape((h, w, 4))
-            self._rgb_arr[:, :, 0] = arr[:, :, 0]
-            self._rgb_arr[:, :, 1] = arr[:, :, 1]
-            self._rgb_arr[:, :, 2] = arr[:, :, 2]
-            ppm_data = self._ppm_header + self._rgb_arr.tobytes()
-            self._tk_photo = tk.PhotoImage(data=ppm_data, format='ppm')
-            if self._canvas_image is None:
-                self._canvas_image = self._canvas.create_image(
-                    0, 0, anchor='nw', image=self._tk_photo)
-            else:
-                self._canvas.itemconfig(self._canvas_image, image=self._tk_photo)
+        # Readback → PPM → Tk (общий для обоих режимов)
+        fbo_data = self._fbo.read(components=4)
+        arr = np.frombuffer(fbo_data, dtype=np.uint8).reshape((h, w, 4))
+        self._rgb_arr[:, :, 0] = arr[:, :, 0]
+        self._rgb_arr[:, :, 1] = arr[:, :, 1]
+        self._rgb_arr[:, :, 2] = arr[:, :, 2]
+        ppm_data = self._ppm_header + self._rgb_arr.tobytes()
+        self._tk_photo = tk.PhotoImage(data=ppm_data, format='ppm')
+        if self._canvas_image is None:
+            self._canvas_image = self._canvas.create_image(
+                0, 0, anchor='nw', image=self._tk_photo)
+        else:
+            self._canvas.itemconfig(self._canvas_image, image=self._tk_photo)
 
         _t3 = time.perf_counter_ns()
 
@@ -396,13 +396,27 @@ class HermesEngine:
             self._renderer.upload(world.sim.active_count)
 
     def show_settings(self) -> None:
+        """Показать SettingsWindow (синглтон)."""
+        if hasattr(self, '_settings_win') and self._settings_win is not None:
+            try:
+                self._settings_win.window.lift()
+                self._settings_win.window.focus_set()
+                return
+            except Exception:
+                pass
         class AppProxy:
             __init__ = lambda s: None
             config = self.config
             root = self._tk_root
             engine = type('e', (), {'recalc': lambda s, c: self.recalc(c)})()
             _auto_resize_window = lambda s: None
-        SettingsWindow(AppProxy())
+        win = SettingsWindow(AppProxy())
+        self._settings_win = win
+        # Cleanup ref on close
+        def on_close(*_):
+            self._settings_win = None
+        win.window.protocol('WM_DELETE_WINDOW', lambda: (win.window.destroy(), on_close()))
+        win.window.bind('<Destroy>', on_close, add='+')
 
     def quit_app(self) -> None:
         self.running = False
