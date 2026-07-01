@@ -34,7 +34,14 @@ class MoodSystem:
             world.meta.color_shift = 0.0
             return
 
-        mood, color_shift = self._analyze(response)
+        mood, color_shift, display_text = self._analyze(response)
+
+        # Заменяем сырой JSON на чистый текст для TextOverlay
+        if display_text:
+            world.meta.ai_response = display_text
+        else:
+            world.meta.ai_response = ''
+
         world.meta.mood = mood
         world.meta.color_shift = color_shift
 
@@ -48,8 +55,8 @@ class MoodSystem:
                     cfg[key] = mood_params[key]
 
     @staticmethod
-    def _analyze(text: str) -> tuple[str, float]:
-        """Проанализировать текст и вернуть (mood, color_shift)."""
+    def _analyze(text: str) -> tuple[str, float, str]:
+        """Проанализировать текст и вернуть (mood, color_shift, display_text)."""
         # Попробовать JSON
         cleaned = text.strip()
         if cleaned.startswith('```'):
@@ -63,14 +70,15 @@ class MoodSystem:
             if mood not in ('happy', 'sad', 'thinking', 'speaking', 'idle'):
                 mood = MoodSystem._keyword_mood(text)
             color_hue = max(0.0, min(1.0, float(parsed.get('color_hue', 0.0))))
-            return mood, color_hue
+            display_text = str(parsed.get('text', ''))
+            return mood, color_hue, display_text
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
         # Keyword fallback
         mood = MoodSystem._keyword_mood(text)
         shift = AI_MOODS.get(mood, AI_MOODS['idle'])['color_shift']
-        return mood, shift
+        return mood, shift, text
 
     @staticmethod
     def _keyword_mood(text: str) -> str:

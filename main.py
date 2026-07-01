@@ -346,16 +346,16 @@ class HermesEngine:
             return
         try:
             self._render_frame()
-            self.text_overlay.update(self.world, 0.016)
             self._tk_root.update_idletasks()
 
-            # AI modules
+            # AI: сначала запрос → ответ → настроение → только потом text_overlay
             if self.lm_autostart:
                 self.lm_autostart.update(self.world, 0.016)
             if self.ai_system:
                 self.ai_system.update(self.world, 0.016)
             if self.mood_system:
                 self.mood_system.update(self.world, 0.016)
+            self.text_overlay.update(self.world, 0.016)  # last — после того как mood очистил JSON
         except Exception as e:
             print(f"[tk_tick] {e}", flush=True)
             import traceback

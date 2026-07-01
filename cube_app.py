@@ -719,7 +719,7 @@ class SettingsWindow:
             canvas.bind('<Button-5>', lambda e: canvas.yview_scroll(1, 'units'))
 
         # Cleanup — при destroy удаляем только canvas биндинги
-        self.window.bind('<Destroy>', lambda e: canvas.unbind('<MouseWheel>'))
+        self.window.bind('<Destroy>', lambda e: canvas.unbind('<MouseWheel>') if canvas.winfo_exists() else None, add='+')
 
         # ─── Content frame (parent = scroll_frame) ──────────────────
         parent = self.scroll_frame
