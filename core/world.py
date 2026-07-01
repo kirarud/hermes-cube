@@ -147,18 +147,14 @@ class World:
     def resize_pool(self, new_count: int) -> None:
         """Изменить активное количество частиц.
 
-        Если new_count > pool_size — перевыделить все массивы (pool растёт).
-        Если new_count <= pool_size — проверить actual size массивов.
+        Если new_count > current_size массивов — перевыделить.
         """
-        # Типовой sim-массив для замера реального размера
-        ref = self.sim.base_position
-        current_size = len(ref)
+        current_size = len(self.sim.base_position)
 
-        if new_count <= self.sim.pool_size and new_count <= current_size:
+        if new_count <= current_size:
             self.sim.active_count = max(0, new_count)
         else:
-            # Растягиваем pool: до new_count + запас 20%, но минимум pool_size
-            new_pool = max(self.sim.pool_size, new_count + new_count // 5)
+            new_pool = new_count + new_count // 5
             self.sim.pool_size = new_pool
 
             def _grow(arr: NDArray, shape_suffix=1) -> NDArray:

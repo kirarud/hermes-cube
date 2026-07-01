@@ -32,7 +32,7 @@ def _rebuild(world: World, density: int) -> None:
     n = len(pts)
 
     # Если массив слишком мал — ресайзим мир
-    if n > world.sim.pool_size:
+    if n > world.sim.base_position.shape[0]:
         world.resize_pool(n)
 
     world.sim.active_count = n

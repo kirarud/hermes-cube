@@ -56,6 +56,7 @@ from core.systems.text_overlay import TextOverlaySystem
 from core.systems.input_window import InputWindowSystem
 from core.monitor import FrameMonitor
 from core.gpu import GpuRenderer
+from char_cube import SYMBOL_SETS
 
 print("[main.py] imports ok", flush=True)
 
@@ -241,29 +242,66 @@ class HermesEngine:
         self._fbo.use()
         self._gl_ctx.clear(0.0, 0.0, 1.0 / 255.0, 0.0)
         cell = max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE)))
-        self._renderer._symbol = self.config.get('symbol', 'circle')
-        self._renderer.render(px, py, pz, rgb_arr, w, h, cell_size=cell)
 
-        # Трейлы (поверх фона, под кубом — через trail_layer)
-        if self._trail_enabled and self.world.render.trail_layer is not None:
-            tx, ty, trgb = self.world.render.trail_layer
-            if len(tx) > 0:
-                t_depth = np.zeros(len(tx), dtype=np.float64)
-                self._renderer.render(tx, ty, t_depth, trgb, w, h, cell_size=1)
+        # Если char_mode != 'dots' — рисуем символы через canvas (поверх фона)
+        char_mode: str = self.config.get('char_mode', 'dots')
+        if char_mode != 'dots':
+            # Рендерим только фон через GPU (если нужно — cell для прозрачности)
+            self._renderer._symbol = 'dot'
+            self._renderer.render(px, py, pz, rgb_arr, w, h, cell_size=1)
 
-        fbo_data = self._fbo.read(components=4)
-        arr = np.frombuffer(fbo_data, dtype=np.uint8).reshape((h, w, 4))
-        self._rgb_arr[:, :, 0] = arr[:, :, 0]
-        self._rgb_arr[:, :, 1] = arr[:, :, 1]
-        self._rgb_arr[:, :, 2] = arr[:, :, 2]
-        ppm_data = self._ppm_header + self._rgb_arr.tobytes()
+            # Выводим кадр на canvas как фон
+            fbo_data = self._fbo.read(components=4)
+            arr = np.frombuffer(fbo_data, dtype=np.uint8).reshape((h, w, 4))
+            self._rgb_arr[:, :, 0] = arr[:, :, 0]
+            self._rgb_arr[:, :, 1] = arr[:, :, 1]
+            self._rgb_arr[:, :, 2] = arr[:, :, 2]
+            ppm_data = self._ppm_header + self._rgb_arr.tobytes()
+            self._tk_photo = tk.PhotoImage(data=ppm_data, format='ppm')
+            if self._canvas_image is None:
+                self._canvas_image = self._canvas.create_image(
+                    0, 0, anchor='nw', image=self._tk_photo)
+            else:
+                self._canvas.itemconfig(self._canvas_image, image=self._tk_photo)
 
-        self._tk_photo = tk.PhotoImage(data=ppm_data, format='ppm')
-        if self._canvas_image is None:
-            self._canvas_image = self._canvas.create_image(
-                0, 0, anchor='nw', image=self._tk_photo)
+            # Текст как символы поверх
+            self._canvas.delete('chars')
+            symbol_set_name: str = self.config.get('symbol_set', 'default')
+            symbols: List[str] = SYMBOL_SETS.get(symbol_set_name, SYMBOL_SETS['default'])
+            if n > 0:
+                # batch: текст с несколькими символами для каждой частицы
+                font_size = max(6, cell * 2)
+                font_name = 'Segoe UI' if all(ord(c) < 256 for c in symbols[0]) else 'Segoe UI Emoji'
+                for i in range(0, min(n, 500), max(1, n // 200)):
+                    ch = symbols[i % len(symbols)]
+                    self._canvas.create_text(
+                        int(px[i]), int(py[i]), text=ch,
+                        fill=f'#{rgb_arr[i,0]:02x}{rgb_arr[i,1]:02x}{rgb_arr[i,2]:02x}',
+                        font=(font_name, font_size), tags='chars',
+                    )
         else:
-            self._canvas.itemconfig(self._canvas_image, image=self._tk_photo)
+            self._renderer._symbol = self.config.get('symbol', 'circle')
+            self._renderer.render(px, py, pz, rgb_arr, w, h, cell_size=cell)
+
+            # Трейлы (поверх фона, под кубом — через trail_layer)
+            if self._trail_enabled and self.world.render.trail_layer is not None:
+                tx, ty, trgb = self.world.render.trail_layer
+                if len(tx) > 0:
+                    t_depth = np.zeros(len(tx), dtype=np.float64)
+                    self._renderer.render(tx, ty, t_depth, trgb, w, h, cell_size=1)
+
+            fbo_data = self._fbo.read(components=4)
+            arr = np.frombuffer(fbo_data, dtype=np.uint8).reshape((h, w, 4))
+            self._rgb_arr[:, :, 0] = arr[:, :, 0]
+            self._rgb_arr[:, :, 1] = arr[:, :, 1]
+            self._rgb_arr[:, :, 2] = arr[:, :, 2]
+            ppm_data = self._ppm_header + self._rgb_arr.tobytes()
+            self._tk_photo = tk.PhotoImage(data=ppm_data, format='ppm')
+            if self._canvas_image is None:
+                self._canvas_image = self._canvas.create_image(
+                    0, 0, anchor='nw', image=self._tk_photo)
+            else:
+                self._canvas.itemconfig(self._canvas_image, image=self._tk_photo)
 
         _t3 = time.perf_counter_ns()
 
