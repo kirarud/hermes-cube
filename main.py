@@ -188,7 +188,7 @@ class HermesEngine:
         self.ai_system = AISystem()
         self.mood_system = MoodSystem()
         self.lm_autostart = LMAutoStartSystem()
-        self.avatar_text = AvatarTextSystem(canvas=self._canvas)
+        self.avatar_text = AvatarTextSystem()
         print("[HermesEngine] ai modules ok", flush=True)
 
         self.text_overlay = TextOverlaySystem(self._tk_root)
@@ -225,9 +225,19 @@ class HermesEngine:
         self._tk_root.bind('T', lambda e: self._toggle_draggable())
         self._tk_root.bind('r', lambda e: self._toggle_trails())
         self._tk_root.bind('R', lambda e: self._toggle_trails())
+        # Drag
+        self._tk_root.bind('<Button-1>', self._drag_start)
+        self._tk_root.bind('<B1-Motion>', self._drag_move)
+        self._tk_root.bind('<ButtonRelease-1>', self._drag_end)
         print("[HermesEngine] bindings ok", flush=True)
 
         self._tk_root.protocol('WM_DELETE_WINDOW', self._hide_window)
+
+        # ── HTTP API ────────────────────────────────────────────────
+        from api_server import start_api_server
+        start_api_server(self, port=8081)
+        print("[HermesEngine] api server started", flush=True)
+
         self._tk_root.after(100, self._tk_tick)
         print("[HermesEngine] init done", flush=True)
 
@@ -401,6 +411,23 @@ class HermesEngine:
             ex = user32.GetWindowLongW(hwnd, -20)
             ex = ex & ~0x00000020 if self._draggable else ex | 0x00000020
             user32.SetWindowLongW(hwnd, -20, ex)
+            user32.InvalidateRect(hwnd, None, True)
+
+    def _drag_start(self, event):
+        self._drag_x = event.x_root
+        self._drag_y = event.y_root
+
+    def _drag_move(self, event):
+        dx = event.x_root - self._drag_x
+        dy = event.y_root - self._drag_y
+        self._drag_x = event.x_root
+        self._drag_y = event.y_root
+        x = self._tk_root.winfo_x() + dx
+        y = self._tk_root.winfo_y() + dy
+        self._tk_root.geometry(f'+{x}+{y}')
+
+    def _drag_end(self, event):
+        pass
 
     def _toggle_trails(self) -> None:
         self._trail_enabled = not self._trail_enabled
