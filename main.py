@@ -439,13 +439,20 @@ class HermesEngine:
             self.world.render.trail_history.clear()
 
     def recalc(self, cfg: Dict[str, Any]) -> None:
+        """Пересобрать сетку после смены density/settings (без краша)."""
         import core.systems.grid_generator as gg
         world = self.world
         old_count = world.sim.active_count
         world.meta.config = cfg
-        gg.update(world, 0.042)
-        if world.sim.active_count != old_count:
-            self._renderer.upload(world.sim.active_count)
+        try:
+            gg.update(world, 0.042)
+            if world.sim.active_count != old_count:
+                # force=True — пересоздать VBO под новый N
+                self._renderer.upload(world.sim.active_count, force=True)
+        except Exception as e:
+            print(f"[recalc] density/resize failed: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
     def show_settings(self) -> None:
         """Показать SettingsWindow (синглтон)."""

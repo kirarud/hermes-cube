@@ -169,6 +169,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     'symbol_set': 'default',      # from SYMBOL_SETS keys
     # Color mode
     'color_mode': 'default',      # 'default' | 'z_layers'
+    # Companion: как показывать ответ AI
+    'response_mode': 'both',      # 'both' | 'letters' | 'avatar'
 }
 
 #: Predefined colour palette for agent sprites

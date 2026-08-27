@@ -147,26 +147,26 @@ class World:
         return cls(sim=sim, render=render, meta=meta)
 
     def resize_pool(self, new_count: int) -> None:
-        """Изменить активное количество частиц.
+        """Изменить активное количество частиц и выровнять render-буферы.
 
-        Если new_count > current_size массивов — перевыделить.
+        Раньше при росте active_count не обновлялся, а render-массивы
+        оставались старого размера → краш при смене particle_density.
         """
+        new_count = max(0, int(new_count))
         current_size = len(self.sim.base_position)
 
-        if new_count <= current_size:
-            self.sim.active_count = max(0, new_count)
-        else:
-            new_pool = new_count + new_count // 5
+        if new_count > current_size:
+            new_pool = max(new_count + max(new_count // 5, 64), new_count)
             self.sim.pool_size = new_pool
 
-            def _grow(arr: NDArray, shape_suffix=1) -> NDArray:
-                """Растянуть массив до new_pool по первой оси."""
+            def _grow(arr: NDArray, shape_suffix: int = 1) -> NDArray:
                 if shape_suffix == 1:
                     new = np.zeros(new_pool, dtype=arr.dtype)
                 else:
                     new = np.zeros((new_pool, *arr.shape[1:]), dtype=arr.dtype)
-                n_old = min(len(arr), new_count)
-                new[:n_old] = arr[:n_old]
+                n_old = min(len(arr), current_size)
+                if n_old > 0:
+                    new[:n_old] = arr[:n_old]
                 return new
 
             self.sim.base_position = _grow(self.sim.base_position, 2)
@@ -177,8 +177,10 @@ class World:
             self.sim.alive = _grow(self.sim.alive, 1)
             self.sim.symbol_idx = _grow(self.sim.symbol_idx, 1)
 
-        n = self.sim.active_count
-        self.render.projected_x = self.render.projected_x[:n] if len(self.render.projected_x) >= n else np.zeros(n, dtype=np.float64)
-        self.render.projected_y = self.render.projected_y[:n] if len(self.render.projected_y) >= n else np.zeros(n, dtype=np.float64)
-        self.render.final_rgb = self.render.final_rgb[:n] if len(self.render.final_rgb) >= n else np.zeros((n, 3), dtype=np.uint8)
-        self.render.depth = self.render.depth[:n] if len(self.render.depth) >= n else np.zeros(n, dtype=np.float64)
+        self.sim.active_count = new_count
+        n = new_count
+        # Всегда полный размер n — без «обрезать и надеяться»
+        self.render.projected_x = np.zeros(n, dtype=np.float64)
+        self.render.projected_y = np.zeros(n, dtype=np.float64)
+        self.render.final_rgb = np.zeros((n, 3), dtype=np.uint8)
+        self.render.depth = np.zeros(n, dtype=np.float64)

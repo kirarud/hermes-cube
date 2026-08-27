@@ -76,9 +76,12 @@ class TextOverlaySystem:
         self._animate(dt)
 
     def _spawn_text(self, text: str, from_x: int, from_y: int) -> None:
-        if not self._running or not self.canvas:
+        if not self.canvas:
             return
-        if self.window and self.window.state() == 'withdrawn':
+        # Сначала показать окно — иначе _running=False и буквы не появлялись
+        if self.window is not None and (
+            self.window.state() == 'withdrawn' or not self._running
+        ):
             self._show()
 
         for ch in text:

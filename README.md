@@ -1,8 +1,12 @@
 # ♢ Hermes Cube — Desktop Particle Avatar
 
-**GPU-ускоренный 3D-куб из частиц на прозрачном фоне.**  
-Работает как overlay поверх всех окон на Windows.  
-~68 FPS (600 частиц, Tk PPM) · ~312 FPS (DIB overlay).
+**Живой companion на Windows:** куб из частиц + AI (LM Studio) + настроение + текст.
+
+> **North Star:** [NORTH_STAR.md](NORTH_STAR.md) — один смысл, список «не делаем».  
+> **Legacy:** [LEGACY.md](LEGACY.md) — старые модули (не расширяем).
+
+**Точка входа:** только `python main.py`  
+GPU-ускоренный overlay · ~68 FPS (Tk PPM path).
 
 ---
 
@@ -17,6 +21,9 @@ pip install numpy pillow moderngl pystray
 python main.py
 ```
 
+Опционально: [LM Studio](https://lmstudio.ai) на `http://127.0.0.1:1234` с моделью `gemma-4-e4b-it`.  
+Без LM Studio куб отвечает в **offline-режиме** (короткие заготовки).
+
 ### Горячие клавиши
 
 | Клавиша | Действие |
@@ -26,6 +33,18 @@ python main.py
 | `t` / `T` | Режим перемещения |
 | `r` / `R` | Трейлы вкл/выкл |
 | `Esc` / `q` / `h` | Скрыть окно |
+
+### Память companion
+
+Файл: `%APPDATA%\HermesCube\memory.md`  
+В чате куба:
+
+- `запомни: меня зовут …`
+- `забудь <фрагмент>`
+
+### HTTP API (localhost:8081)
+
+`GET /api/status` · `POST /api/speak` · `POST /api/mood` · `POST /api/config`
 
 ---
 
