@@ -8,6 +8,7 @@
   text_hold_time   float — сколько секунд держать надпись (3.5)
   text_morph_time  float — длительность morph_in/morph_out (0.8)
   text_char_mode   str   — 'symbols' (буквы) | 'dots' | 'glow'
+  text_style       str   — стиль набора: solid|outline|glow|grid|wave|halftone
   text_max_chars   int   — обрезка длинного текста (48; 0 = без обрезки)
   text_fill        float — какую долю кадра занимает надпись (0.92)
   text_freeze_spin bool  — останавливать вращение на время текста (True)
@@ -22,7 +23,12 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from core.world import World
-from core.text_layout import layout_text_mask, glyph_grid_cols
+from core.text_layout import (
+    DEFAULT_TEXT_STYLE,
+    TEXT_STYLES,
+    glyph_grid_cols,
+    layout_text_mask_styled,
+)
 
 # Дефолты — используются, если ключа нет в config
 MORPH_IN_TIME: float = 0.8
@@ -34,6 +40,7 @@ DEFAULTS: Dict[str, Any] = {
     'text_hold_time': HOLD_TIME,
     'text_morph_time': MORPH_IN_TIME,
     'text_char_mode': 'symbols',
+    'text_style': DEFAULT_TEXT_STYLE,
     'text_max_chars': 48,
     'text_fill': 0.92,
     'text_freeze_spin': True,
@@ -52,6 +59,9 @@ class AvatarTextSystem:
         self._last_response: str = ''
         # Снимок конфига до вывода текста — чтобы вернуть анимацию как была
         self._saved: Dict[str, Any] = {}
+        # Текст на экране и цвета частиц до затемнения стилем
+        self._text: str = ''
+        self._saved_colors: Optional[Any] = None
         # Заморозка вращения на время надписи (из text_freeze_spin)
         self._freeze_enabled: bool = True
 
@@ -125,6 +135,45 @@ class AvatarTextSystem:
         if max_chars > 0 and len(text) > max_chars:
             text = text[:max_chars - 1].rstrip() + '…'
 
+        # Снимок настроек — один раз на всю серию надписей. Иначе вторая
+        # фраза, пришедшая поверх первой, запомнит как «было» уже текстовые
+        # значения, и куб после текста не вернётся в куб.
+        if not self._saved:
+            self._saved = {k: cfg.get(k) for k in _RESTORE_KEYS}
+
+        self._text = text
+        cfg['shape_preset'] = 'text'
+        cfg['morph_progress'] = 0.0
+        cfg['char_mode'] = self._char_mode(cfg)
+        # rotation_speed НЕ трогаем: угол = t * speed, смена speed на ходу
+        # даёт скачок на t*Δspeed рад. Вращение гасится через meta.text_freeze
+        # (lerp результата), который идёт строго по morph_progress.
+        self._freeze_enabled = bool(self._opt(cfg, 'text_freeze_spin'))
+        world.meta.text_freeze = 0.0
+        world.meta.text_mode = True
+
+        self._render_mask(world, text)
+
+        self.state = 'morph_in'
+        self._timer = 0.0
+
+    @staticmethod
+    def _char_mode(cfg: Dict[str, Any]) -> str:
+        """Режим отрисовки частиц: стиль 'glow' требует мягких точек."""
+        if str(AvatarTextSystem._opt(cfg, 'text_style')) == 'glow':
+            return 'glow'
+        return str(AvatarTextSystem._opt(cfg, 'text_char_mode'))
+
+    def _render_mask(self, world: World, text: str) -> None:
+        """Пересобрать маску надписи под текущий config['text_style'].
+
+        Вызывается и при старте фразы, и при смене стиля на ходу —
+        морфинг при этом не перезапускается.
+        """
+        n = world.sim.active_count
+        if n == 0:
+            return
+        cfg = world.meta.config
         fill = float(self._opt(cfg, 'text_fill'))
 
         # Сколько глифов cell_size влезает в надпись на экране. Один глиф =
@@ -141,33 +190,53 @@ class AvatarTextSystem:
                 fill=fill,
             )
 
-        positions, n_used, _ = layout_text_mask(
+        # Цвета возвращаем ДО нового затемнения, иначе веса накопятся и
+        # надпись будет тусклее с каждой сменой стиля.
+        self._restore_colors(world)
+
+        positions, n_used, _, weights = layout_text_mask_styled(
             text,
             n,
             font_size=int(self._opt(cfg, 'text_font_size')),
             fill=fill,
             grid_cols=grid_cols,
+            style=str(self._opt(cfg, 'text_style')),
         )
         world.sim.shape_cache['text'] = positions.copy()
 
-        # Запоминаем текущие настройки анимации ДО того, как их менять.
-        self._saved = {k: cfg.get(k) for k in _RESTORE_KEYS}
-
-        cfg['morph_progress'] = 0.0
-        cfg['shape_preset'] = 'text'
-        cfg['char_mode'] = str(self._opt(cfg, 'text_char_mode'))
-        # rotation_speed НЕ трогаем: угол = t * speed, смена speed на ходу
-        # даёт скачок на t*Δspeed рад. Вращение гасится через meta.text_freeze
-        # (lerp результата), который идёт строго по morph_progress.
-        self._freeze_enabled = bool(self._opt(cfg, 'text_freeze_spin'))
-        world.meta.text_freeze = 0.0
-
-        world.meta.text_mode = True
-
         # Per-particle символы из текста
         self._map_text_to_symbols(world, text, n_used)
-        self.state = 'morph_in'
-        self._timer = 0.0
+        self._apply_weights(world, weights, n_used)
+
+    def _apply_weights(self, world: World, weights: Any, n_used: int) -> None:
+        """Яркость частицы = её цвет × вес стиля. Откат — в _restore_colors."""
+        k = min(world.sim.active_count, int(n_used))
+        if k <= 0:
+            return
+        w = np.asarray(weights[:k], dtype=np.float64).reshape(k, 1)
+        if float(w.min()) >= 0.999:
+            return  # стиль без затемнения — нечего запоминать
+        self._saved_colors = world.sim.color[:world.sim.active_count].copy()
+        world.sim.color[:k] = np.clip(
+            world.sim.color[:k].astype(np.float64) * w, 0.0, 255.0)
+
+    def _restore_colors(self, world: World) -> None:
+        if self._saved_colors is None:
+            return
+        n = min(world.sim.active_count, self._saved_colors.shape[0])
+        if n > 0:
+            world.sim.color[:n] = self._saved_colors[:n]
+        self._saved_colors = None
+
+    def set_style(self, world: World, style: str) -> None:
+        """Сменить стиль на ходу: надпись пересобирается, таймер — нет."""
+        if style not in TEXT_STYLES:
+            style = DEFAULT_TEXT_STYLE
+        cfg = world.meta.config
+        cfg['text_style'] = style
+        if self._text and self.state != 'idle':
+            cfg['char_mode'] = self._char_mode(cfg)
+            self._render_mask(world, self._text)
 
     def _finish(self, world: World) -> None:
         cfg = world.meta.config
@@ -180,7 +249,9 @@ class AvatarTextSystem:
             cfg['shape_preset'] = 'cube'
         world.meta.text_mode = False
         world.meta.text_freeze = 0.0
+        self._restore_colors(world)
         self._saved = {}
+        self._text = ''
         self.state = 'idle'
         self._last_response = ''
 

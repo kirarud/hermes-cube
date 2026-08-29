@@ -99,19 +99,47 @@ def _create_tray_image():
     return img
 
 
+def _text_style_items(app_ref: Any) -> tuple:
+    """Пункты подменю «Текст» — радио-группа по config['text_style']."""
+    import pystray
+    from core.text_layout import TEXT_STYLES, TEXT_STYLE_LABELS
+
+    def make(key: str):
+        # pystray отвергает лямбды с co_argcount > 2, поэтому key берём
+        # из замыкания, а не аргументом по умолчанию.
+        return pystray.MenuItem(
+            TEXT_STYLE_LABELS.get(key, key),
+            lambda icon, item: app_ref.set_text_style(key),
+            checked=lambda item: (
+                app_ref.config.get('text_style', 'solid') == key),
+            radio=True,
+        )
+
+    return tuple(make(k) for k in TEXT_STYLES)
+
+
+def _build_tray_menu(app_ref: Any) -> tuple:
+    """Собирать меню заново при каждом открытии — галочки должны быть живые."""
+    import pystray
+    return (
+        pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
+        pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
+        pystray.MenuItem('💬 Ввод (C)', lambda i, m: app_ref.input_win.toggle()),
+        pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref._toggle_trails()),
+        pystray.MenuItem('🔤 Текст', pystray.Menu(*_text_style_items(app_ref))),
+        pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
+    )
+
+
 def _setup_tray_icon(app_ref: Any) -> Optional[Any]:
     import pystray
     try:
         image = _create_tray_image()
-        menu = pystray.Menu(
-            pystray.MenuItem('♢ Показать/Скрыть', lambda i, m: app_ref.toggle_window()),
-            pystray.MenuItem('↕ Переместить', lambda i, m: app_ref._toggle_draggable()),
-            pystray.MenuItem('💬 Ввод (C)', lambda i, m: app_ref.input_win.toggle()),
-            pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref._toggle_trails()),
-            pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
-        )
+        # Menu(callable) — pystray дёргает вызываемое при каждом открытии,
+        # поэтому выбранный стиль помечается галочкой без пересборки иконки.
+        menu = pystray.Menu(lambda: _build_tray_menu(app_ref))
         icon = pystray.Icon('HermesCube', image, '♢ Hermes Cube', menu)
         if hasattr(icon, 'run_detached'):
             icon.run_detached()
@@ -442,6 +470,42 @@ class HermesEngine:
         self.world.render.trail_enabled = self._trail_enabled
         if not self._trail_enabled:
             self.world.render.trail_history.clear()
+
+    def set_text_style(self, style: str) -> None:
+        """Выбрать стиль набора текста (пункт трея «🔤 Текст»).
+
+        Вызывается из потока иконки в трее, а shape_cache читает рендер-цикл
+        из потока Tk — поэтому пересборку маски отдаём в after().
+        """
+        try:
+            from core.text_layout import TEXT_STYLES
+            if style not in TEXT_STYLES:
+                return
+        except Exception:
+            return
+
+        self.config['text_style'] = style
+        try:
+            save_config(self.config)
+        except Exception as e:
+            print(f"[tray] не сохранил text_style: {e}", flush=True)
+
+        try:
+            self._tk_root.after(0, lambda s=style: self._apply_text_style(s))
+        except Exception:
+            self._apply_text_style(style)
+
+    def _apply_text_style(self, style: str) -> None:
+        """Пересобрать надпись в новом стиле, если она сейчас на экране."""
+        at = getattr(self, 'avatar_text', None)
+        world = getattr(self, 'world', None)
+        if at is None or world is None:
+            return
+        # config куба — тот же объект, но на всякий случай синхронизируем
+        cfg = world.meta.config
+        if cfg is not self.config:
+            cfg['text_style'] = style
+        at.set_style(world, style)
 
     def recalc(self, cfg: Dict[str, Any]) -> None:
         """Пересобрать сетку после смены density/settings (без краша)."""
