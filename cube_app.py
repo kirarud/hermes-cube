@@ -171,6 +171,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     'color_mode': 'default',      # 'default' | 'z_layers'
     # Companion: как показывать ответ AI
     'response_mode': 'both',      # 'both' | 'letters' | 'avatar'
+    # Companion: вывод текста частицами (avatar_text)
+    'text_font_size': 42,         # размер шрифта маски текста
+    'text_hold_time': 3.5,        # сек — сколько держать надпись
+    'text_morph_time': 0.8,       # сек — morph_in / morph_out
+    'text_char_mode': 'symbols',  # 'symbols' | 'dots' | 'glow' | 'words'
+    'text_max_chars': 48,         # обрезка длинного текста (0 = без обрезки)
+    'text_fill': 0.92,            # доля кадра под надпись (0.1..1.0)
+    'text_freeze_spin': True,     # останавливать вращение на время текста
+    'text_auto_scale': True,      # 1 частица = 1 глиф (иначе буквы слипаются)
+    # Никогда не давать кубу вылезти за границы окна («невидимая рамка»)
+    'fit_to_window': True,
 }
 
 #: Predefined colour palette for agent sprites

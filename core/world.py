@@ -94,6 +94,12 @@ class MetaState:
     chat_history: List[Dict[str, str]] = field(default_factory=list)
     text_mode: bool = False
     speak_buffer: str = ''
+    # 0..1 — насколько «заморожен» куб для чтения текста.
+    # 1 = вращение и анимация выключены, надпись развёрнута к камере.
+    # Ведётся avatar_text строго по morph_progress → morph_out = точный реверс.
+    text_freeze: float = 0.0
+    # True = настроение задано извне (API), MoodSystem не перезаписывает
+    mood_lock: bool = False
 
     # Input / Events
     events: deque = field(default_factory=deque)

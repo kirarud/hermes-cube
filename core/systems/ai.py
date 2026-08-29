@@ -18,20 +18,90 @@ import urllib.request
 from typing import Dict, List, Optional
 
 from core.world import World
-from core.ai_constants import LM_STUDIO_URL, AI_MODEL
+from core.ai_constants import AI_BASE_URL, AI_API_KEY, AI_MODEL
 from core import companion_memory as mem
 
 
-def _lm_reachable(timeout: float = 1.5) -> bool:
+def _auth_headers() -> Dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        # Cloudflare на gorouter.app отдаёт 403 на оба варианта:
+        # и на дефолтный Python-urllib, и на "OpenAI/Python 1.0".
+        # Браузерный UA проходит. Проверено 29.08.2026.
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+    }
+    if AI_API_KEY:
+        headers["Authorization"] = f"Bearer {AI_API_KEY}"
+    return headers
+
+
+def _lm_reachable(timeout: float = 8.0) -> bool:
+    """Живой ли endpoint. Облако + Cloudflare-хендшейк: 4с мало, даём 8с."""
     try:
         req = urllib.request.Request(
-            f"{LM_STUDIO_URL}/v1/models",
+            f"{AI_BASE_URL}/models",
+            headers=_auth_headers(),
             method='GET',
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        # 401/403 = endpoint жив, но ключ не тот; 404 = нет /models, но чат может быть
+        return e.code in (401, 403, 404)
     except Exception:
         return False
+
+
+def _extract_responses_text(raw: str) -> str:
+    """Собрать текст из OpenAI Responses API, включая SSE-ответы."""
+    parts: List[str] = []
+    for line in raw.splitlines():
+        if not line.startswith('data:'):
+            continue
+        try:
+            event = json.loads(line[5:].strip())
+        except json.JSONDecodeError:
+            continue
+        if event.get('type') == 'response.output_text.delta':
+            parts.append(str(event.get('delta') or ''))
+    if parts:
+        return ''.join(parts).strip()
+
+    # Нестримающий стандартный Responses API.
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return ''
+    if obj.get('output_text'):
+        return str(obj['output_text']).strip()
+    for item in obj.get('output') or []:
+        for content in item.get('content') or []:
+            if content.get('type') == 'output_text' and content.get('text'):
+                parts.append(str(content['text']))
+    return ''.join(parts).strip()
+
+
+def _responses_chat(messages: List[Dict[str, str]], timeout: int) -> str:
+    """OpenAI Responses API fallback для прокси, где нет chat/completions."""
+    input_items = [
+        {
+            'role': msg['role'],
+            'content': [{'type': 'input_text', 'text': msg['content']}],
+        }
+        for msg in messages
+    ]
+    payload = json.dumps({'model': AI_MODEL, 'input': input_items}).encode('utf-8')
+    req = urllib.request.Request(
+        f'{AI_BASE_URL}/responses', data=payload, headers=_auth_headers())
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        text = _extract_responses_text(resp.read().decode('utf-8'))
+    if not text:
+        raise ValueError('Responses API returned no output text')
+    return text
 
 
 def offline_reply(message: str) -> str:
@@ -118,19 +188,35 @@ def ai_chat(
     }).encode('utf-8')
     try:
         req = urllib.request.Request(
-            f"{LM_STUDIO_URL}/v1/chat/completions",
+            f"{AI_BASE_URL}/chat/completions",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=_auth_headers(),
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read().decode('utf-8'))
             return result["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as e:
+        # Локальный Hermes proxy на :8082 реализует Responses API, но не
+        # chat/completions. Для обычных провайдеров сохраняем прежнее поведение.
+        if e.code == 404:
+            try:
+                return _responses_chat(messages, timeout)
+            except Exception as responses_error:
+                e = responses_error
+        return json.dumps(
+            {
+                "mood": "sad",
+                "text": f"Не достучался до модели: {e}. Я всё ещё здесь.",
+                "color_hue": 0.55,
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         # Сеть упала mid-request → мягкий offline
         return json.dumps(
             {
                 "mood": "sad",
-                "text": f"Не достучался до LM Studio: {e}. Я всё ещё здесь.",
+                "text": f"Не достучался до модели: {e}. Я всё ещё здесь.",
                 "color_hue": 0.55,
             },
             ensure_ascii=False,

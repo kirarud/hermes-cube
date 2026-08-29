@@ -1,10 +1,15 @@
 """systems/rotation.py — 3D-вращение частиц.
 
-Читает: sim.animated
+Читает: sim.animated, meta.text_freeze
 Пишет:  sim.world_position
 
 Без копирования — world_position отдельный буфер.
 Поворот по трём осям с разными скоростями (как CubeEngine).
+
+text_freeze (0..1) плавно возвращает частицы к неповёрнутому виду: при 1.0
+надпись развёрнута прямо к камере и не крутится. Это lerp РЕЗУЛЬТАТА, а не
+обнуление угла — угол = t * speed, поэтому менять speed на ходу нельзя
+(получается скачок на t*Δspeed радиан).
 """
 
 from __future__ import annotations
@@ -21,10 +26,6 @@ def update(world: World, dt: float) -> None:
     speed: float = cfg.get('rotation_speed', 0.28)
     t: float = world.meta.t
 
-    ang_x: float = t * 0.20 * (speed / 0.28)
-    ang_y: float = t * speed
-    ang_z: float = t * 0.08 * (speed / 0.28)
-
     n = world.sim.active_count
     if n == 0:
         return
@@ -32,11 +33,28 @@ def update(world: World, dt: float) -> None:
     inp = world.sim.animated[:n]
     out = world.sim.world_position[:n]
 
+    freeze = float(getattr(world.meta, 'text_freeze', 0.0))
+    freeze = min(1.0, max(0.0, freeze))
+
+    if freeze >= 0.999:
+        # Полностью «в лоб» к камере — вращения нет
+        out[:] = inp
+        return
+
+    ang_x: float = t * 0.20 * (speed / 0.28)
+    ang_y: float = t * speed
+    ang_z: float = t * 0.08 * (speed / 0.28)
+
     # One-shot copy + rotate in-place on out
     out[:] = inp
     _rotate_x_inplace(out, ang_x)
     _rotate_y_inplace(out, ang_y)
     _rotate_z_inplace(out, ang_z)
+
+    if freeze > 0.001:
+        # Плавно «доворачиваем» к неповёрнутой позиции
+        out *= (1.0 - freeze)
+        out += inp * freeze
 
 
 def _rotate_x_inplace(pts: NDArray[np.float64], angle: float) -> None:

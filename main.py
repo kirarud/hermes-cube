@@ -160,8 +160,10 @@ class HermesEngine:
         print("[HermesEngine] gpu renderer ok", flush=True)
 
         # Font atlas (только при старте)
-        from core.font_atlas import build_atlas
-        atlas_rgba, char_maps = build_atlas(font_size=14)
+        # font_size ≤ CELL(8), иначе глифы обрезаются ячейкой и текст
+        # превращается в нечитаемую пиксельную кашу.
+        from core.font_atlas import build_atlas, CELL as ATLAS_CELL
+        atlas_rgba, char_maps = build_atlas(font_size=ATLAS_CELL)
         self._renderer.load_font_atlas(atlas_rgba, char_maps)
         self._char_map = char_maps
         print("[HermesEngine] font atlas loaded", flush=True)
@@ -207,6 +209,7 @@ class HermesEngine:
         self.monitor = FrameMonitor()
         self._fps_count: int = 0
         self._fps_time: float = time.perf_counter()
+        self._fps_value: float = 0.0
         print("[HermesEngine] state ok", flush=True)
 
         self.tray_icon: Optional[Any] = None
@@ -330,11 +333,13 @@ class HermesEngine:
         self._fps_count += 1
         now_s = time.perf_counter()
         dt_fps = now_s - self._fps_time
-        fps = 0.0
         if dt_fps >= 0.5:
-            fps = self._fps_count / dt_fps
+            self._fps_value = self._fps_count / dt_fps
             self._fps_count = 0
             self._fps_time = now_s
+        # Между замерами держим последнее значение: раньше сюда шёл 0.0 и
+        # monitor.fps (а с ним /api/status) почти всегда показывал ноль.
+        fps = getattr(self, '_fps_value', 0.0)
 
         self.monitor.log_frame(
             fps=fps,
@@ -454,6 +459,56 @@ class HermesEngine:
             import traceback
             traceback.print_exc()
 
+    def _auto_resize_window(self) -> None:
+        """Расширить окно, чтобы куб не обрезался «невидимой рамкой».
+
+        Окно overrideredirect + FBO ровно по размеру окна → всё, что
+        проецируется за границы, физически отсутствует в кадре. При росте
+        cube_scale / wave_amp / pulse_amplitude нужно окно побольше.
+        """
+        MAX_PX: int = 1600
+        try:
+            scale_val = float(self.config.get('cube_scale', 0.27))
+            pulse_amp = float(self.config.get('pulse_amplitude', 0.12))
+            anim_amp = float(self.config.get('wave_amp', 0.12))
+            cell = float(max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE))))
+
+            w_cur = max(10, self._tk_root.winfo_width())
+            h_cur = max(10, self._tk_root.winfo_height())
+            base = float(min(w_cur, h_cur))
+            if base < 10:
+                return
+
+            # projection.py: scale = base * scale_val / (1+pulse_amp) * pulse,
+            # где pulse доходит до (1+pulse_amp) → пик == base * scale_val.
+            peak_scale = base * scale_val
+            # Куб с диагональю √3 плюс амплитуда анимации частиц
+            max_radius = 1.733 + anim_amp * 2.0
+            needed = 2.0 * (max_radius * peak_scale + cell + 8.0)
+
+            if needed != needed or needed in (float('inf'), float('-inf')):
+                return
+            needed_int = max(300, min(MAX_PX, int(needed)))
+
+            sw = self._tk_root.winfo_screenwidth()
+            sh = self._tk_root.winfo_screenheight()
+            needed_int = min(needed_int, sw, sh)
+
+            if needed_int > max(w_cur, h_cur):
+                x = self._tk_root.winfo_x()
+                y = self._tk_root.winfo_y()
+                # Расти от центра, чтобы куб не «уползал»
+                x -= (needed_int - w_cur) // 2
+                y -= (needed_int - h_cur) // 2
+                x = max(0, min(x, sw - needed_int))
+                y = max(0, min(y, sh - needed_int))
+                self._tk_root.geometry(f'{needed_int}x{needed_int}+{x}+{y}')
+                self._tk_root.update_idletasks()
+                self._resize_buffers(needed_int, needed_int)
+                print(f"[resize] window → {needed_int}×{needed_int}", flush=True)
+        except Exception as e:
+            print(f"[resize] auto_resize failed: {e}", flush=True)
+
     def show_settings(self) -> None:
         """Показать SettingsWindow (синглтон)."""
         if hasattr(self, '_settings_win') and self._settings_win is not None:
@@ -463,12 +518,14 @@ class HermesEngine:
                 return
             except Exception:
                 pass
+        engine_self = self
+
         class AppProxy:
             __init__ = lambda s: None
             config = self.config
             root = self._tk_root
             engine = type('e', (), {'recalc': lambda s, c: self.recalc(c)})()
-            _auto_resize_window = lambda s: None
+            _auto_resize_window = lambda s: engine_self._auto_resize_window()
         win = SettingsWindow(AppProxy())
         self._settings_win = win
         # Cleanup ref on close

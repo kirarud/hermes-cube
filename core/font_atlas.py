@@ -40,6 +40,14 @@ def _find_font() -> Optional[str]:
 
 def build_atlas(font_size: int = 7) -> Tuple[bytes, Dict[str, NDArray[np.int32]]]:
     font_path = _find_font()
+    # Глиф не может быть больше ячейки: при font_size > CELL буквы обрезаются
+    # и превращаются в кашу из пикселей. CELL=8 → максимум 8.
+    if font_size > CELL:
+        print(
+            f"[FontAtlas] font_size {font_size} > CELL {CELL} — обрезаю до {CELL}",
+            flush=True,
+        )
+        font_size = CELL
     try:
         font = ImageFont.truetype(font_path, font_size) if font_path else None
     except Exception:

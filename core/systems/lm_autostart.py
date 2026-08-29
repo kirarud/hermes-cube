@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from core.world import World
 
-from core.ai_constants import LM_STUDIO_URL, AI_MODEL, AI_MODEL_ID
+from core.ai_constants import LM_STUDIO_URL, AI_MODEL, AI_MODEL_ID, AI_BASE_URL, AI_API_KEY
 
 LM_STUDIO_PATH: str = os.path.join(
     os.environ.get('LOCALAPPDATA', 'C:\\Users\\kirarud\\AppData\\Local'),
@@ -45,6 +45,12 @@ class LMAutoStartSystem:
         if self._started:
             return
         if not world.meta.ai_requested:
+            return
+        # Облачный/удалённый бэкенд — LM Studio поднимать не нужно
+        if AI_API_KEY or not AI_BASE_URL.startswith('http://127.0.0.1'):
+            self._started = True
+            world.meta.ai_ready = True
+            print("[LMAutoStart] remote backend — skip local LM Studio", flush=True)
             return
         if self._attempted:
             # Уже пробовали — не повторяем каждый кадр

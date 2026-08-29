@@ -31,6 +31,13 @@ class MoodSystem:
 
     def update(self, world: World, dt: float) -> None:
         response = world.meta.ai_response
+
+        # Настроение выставлено извне (HTTP API) — не перетираем его каждый кадр.
+        if world.meta.mood_lock:
+            self._last_mood = world.meta.mood
+            if not response:
+                return
+
         if not response:
             world.meta.mood = self._last_mood
             world.meta.color_shift = self._last_color_shift
@@ -45,6 +52,9 @@ class MoodSystem:
             return
 
         mood, color_shift, display_text = self._analyze(response)
+
+        # Настоящий ответ модели перебивает ручной lock
+        world.meta.mood_lock = False
 
         self._last_mood = mood
         self._last_color_shift = color_shift

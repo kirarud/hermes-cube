@@ -34,6 +34,25 @@ def update(world: World, dt: float) -> None:
     base = float(min(w, h))
     scale = base * scale_val / (1.0 + pulse_amp) * pulse
 
+    # ── Защита от «невидимой рамки» ──────────────────────────────────────
+    # cube_scale — ДОЛЯ окна, поэтому при большом значении куб выходит за
+    # границы кадра независимо от размера окна (FBO == размер окна, всё
+    # снаружи физически отсутствует). Ограничиваем масштаб так, чтобы самая
+    # далёкая частица оставалась внутри с запасом под размер ячейки.
+    if cfg.get('fit_to_window', True):
+        margin = float(max(2, int(cfg.get('cell_size', 6)))) + 4.0
+        half = min(w, h) / 2.0 - margin
+        if half > 1.0:
+            max_abs = float(max(
+                np.abs(pts[:, 0]).max(),
+                np.abs(pts[:, 1]).max(),
+            ))
+            if max_abs > 1e-6:
+                # Учитываем пик пульсации, чтобы не обрезало на вдохе
+                peak = scale / pulse * (1.0 + pulse_amp)
+                if peak * max_abs > half:
+                    scale *= half / (peak * max_abs)
+
     cx_s = w / 2.0 + world.meta.cube_ox
     cy_s = h / 2.0 + world.meta.cube_oy
 

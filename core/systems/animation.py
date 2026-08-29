@@ -24,12 +24,16 @@ def update(world: World, dt: float) -> None:
     inp = world.sim.morphed[:n]
     out = world.sim.animated[:n]
 
-    if anim_name == 'off':
+    # Во время чтения текста колебания частиц гасятся (0..1)
+    freeze = float(getattr(world.meta, 'text_freeze', 0.0))
+    freeze = min(1.0, max(0.0, freeze))
+
+    if anim_name == 'off' or freeze >= 0.999:
         out[:] = inp
         return
 
     speed: float = cfg.get('wave_speed', 1.5)
-    amp: float = cfg.get('wave_amp', 0.12)
+    amp: float = cfg.get('wave_amp', 0.12) * (1.0 - freeze)
     t: float = world.meta.t
 
     if anim_name == 'wave':

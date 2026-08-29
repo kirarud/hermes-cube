@@ -59,21 +59,47 @@ def update(world: World, dt: float) -> None:
         world.render.final_rgb[:n] = np.column_stack((r, g, b)).astype(np.uint8)
 
 
+def _position_colors(pts: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Тот же градиент, что у куба: позиция → RGB (0..255, float)."""
+    return np.column_stack((
+        (pts[:, 0] + 1.0) * 127.5,
+        (pts[:, 1] + 1.0) * 127.5,
+        (pts[:, 2] + 1.0) * 127.5,
+    ))
+
+
 def _apply_default_depth(world: World, n: int) -> None:
-    """Стандартный depth shading (как было)."""
-    r0 = world.sim.color[:n, 0]
-    g0 = world.sim.color[:n, 1]
-    b0 = world.sim.color[:n, 2]
-    pz = world.sim.world_position[:n, 2]
+    """Стандартный depth shading.
 
-    depth_factor = 0.6 + 0.4 * (pz + 1.0) / 2.0
+    Цвет частицы задаётся её ИСХОДНОЙ позицией в кубе (sim.color). В режиме
+    текста частицы перелетают в плоскость надписи, а цвета остаются от старых
+    мест — градиент рассыпается в шум. Поэтому при text_freeze цвет плавно
+    пересчитывается от ТЕКУЩЕЙ позиции: тот же градиент, что у куба, но
+    непрерывный вдоль надписи.
+    """
+    base = world.sim.color[:n, :3].astype(np.float64)
 
-    r_p = np.clip(r0 * depth_factor, 0, 255)
-    g_p = np.clip(g0 * depth_factor, 0, 255)
-    b_p = np.clip(b0 * depth_factor, 0, 255)
+    freeze = float(getattr(world.meta, 'text_freeze', 0.0))
+    freeze = min(1.0, max(0.0, freeze))
 
-    world.render.final_rgb = np.column_stack(
-        (r_p, g_p, b_p),
+    pts = world.sim.world_position[:n]
+
+    if freeze > 0.001:
+        target = _position_colors(pts)
+        rgb = base * (1.0 - freeze) + target * freeze
+    else:
+        rgb = base
+
+    pz = pts[:, 2]
+    if freeze > 0.001:
+        # Надпись плоская (Z=0) → depth_factor становится константой 0.8 и
+        # текст выглядит тускло-серым. Ближе к freeze=1 отдаём полную яркость.
+        depth_factor = (0.6 + 0.4 * (pz + 1.0) / 2.0) * (1.0 - freeze) + freeze
+    else:
+        depth_factor = 0.6 + 0.4 * (pz + 1.0) / 2.0
+
+    world.render.final_rgb = np.clip(
+        rgb * depth_factor[:, None], 0, 255,
     ).astype(np.uint8)
 
 

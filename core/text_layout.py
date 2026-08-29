@@ -21,15 +21,27 @@ def layout_text_mask(
     font_name: str = 'Segoe UI',
     font_size: int = 42,
     oversample: float = 2.0,
+    fill: float = 0.92,
+    grid_cols: Optional[int] = None,
 ) -> Tuple[NDArray[np.float64], int, Tuple[float, float, float, float]]:
     """Сгенерировать маску текста из частиц.
 
+    Аспект сохраняется: обе оси нормализуются ОДНИМ делителем, иначе буквы
+    растягиваются по вертикали (было: X/512, Y/128 → растяжение 4×).
+
+    Args:
+        fill: какую долю полуразмера [-1,1] занимает текст по длинной оси.
+        grid_cols: сколько ГЛИФОВ влезает в ширину надписи на экране.
+            Если задано, bitmap рендерится ровно такой ширины — один белый
+            пиксель = одна частица = один глиф. Без этого маска сэмплируется
+            плотнее, чем размер глифа, и буквы наслаиваются друг на друга.
+
     Returns:
-        positions: (n_particles, 3) — -1..1, Z=0 для текста, Z=±0.5 для рамки
+        positions: (n_particles, 3) — -1..1, Z=0 для текста
         n_used: сколько частиц занято текстом
         bbox: (center_x, center_y, width_norm, height_norm) для overlay текста
     """
-    import sys, os
+    import os
     windir = os.environ.get('WINDIR', 'C:\\Windows')
 
     # Поиск шрифта
@@ -37,25 +49,11 @@ def layout_text_mask(
     if not os.path.isfile(font_path):
         font_path = os.path.join(windir, 'Fonts', 'arial.ttf')
 
-    font = ImageFont.truetype(font_path, font_size)
+    if grid_cols is not None and grid_cols > 0:
+        arr = _render_grid_bitmap(text, font_path, int(grid_cols), n_particles)
+    else:
+        arr = _render_bitmap(text, font_path, int(font_size))
 
-    # Рендерим текст в bitmap
-    img_size = (512, 128)
-    img = Image.new('L', img_size, 0)
-    draw = ImageDraw.Draw(img)
-
-    # Вычисляем реальный bounding box текста
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-
-    # Центрируем
-    ox = (img_size[0] - tw) // 2 - bbox[0]
-    oy = (img_size[1] - th) // 2 - bbox[1]
-    draw.text((ox, oy), text, font=font, fill=255)
-
-    # Сэмплируем позиции белых пикселей
-    arr = np.array(img, dtype=np.uint8)
     ys, xs = np.where(arr > 128)
     n_white = len(xs)
 
@@ -65,61 +63,169 @@ def layout_text_mask(
         positions[:, 2] = 5.0  # скрыты
         return positions, 0, (0.0, 0.0, 0.1, 0.1)
 
-    # Нормализуем в [-1, 1]
-    # Y инвертируем (PIL Y сверху вниз)
     h, w = arr.shape
-    px = xs.astype(np.float64) / w * 2.0 - 1.0
-    py = 1.0 - ys.astype(np.float64) / h * 2.0
 
-    # Субсэмплируем если слишком много пикселей
-    n_text = min(n_white, n_particles - 20)  # оставляем минимум 20 на рамку
+    # ── Аспект-корректная нормализация ───────────────────────────────────
+    # Центрируем по середине bitmap и делим ОБЕ оси на один масштаб.
+    # long_side = max(w, h) → текст впишется в [-fill, fill] по длинной оси.
+    long_side = float(max(w, h))
+    sx = (xs.astype(np.float64) - w / 2.0) / (long_side / 2.0) * fill
+    sy = -(ys.astype(np.float64) - h / 2.0) / (long_side / 2.0) * fill
+
+    # Субсэмплируем если пикселей больше, чем частиц
+    n_text = min(n_white, n_particles)
     if n_text < n_white:
-        step = n_white // n_text
-        indices = np.arange(0, n_white, step)[:n_text]
+        # Равномерный отбор без потери формы (linspace, не целочисленный step)
+        indices = np.linspace(0, n_white - 1, n_text).astype(np.int64)
     else:
         indices = np.arange(n_white)
 
     positions = np.zeros((n_particles, 3), dtype=np.float64)
     n_used = len(indices)
 
-    # Текст — позиции с Z=0
-    positions[:n_used, 0] = px[indices]
-    positions[:n_used, 1] = py[indices]
+    # Текст — позиции с Z=0 (плоскость)
+    positions[:n_used, 0] = sx[indices]
+    positions[:n_used, 1] = sy[indices]
 
-    # Рамка: оставшиеся частицы равномерно вокруг
+    # Лишние частицы — прячем за камерой, чтобы не засорять надпись «рамкой».
     if n_used < n_particles:
-        n_frame = n_particles - n_used
-        rng = np.random.default_rng(seed=42)
-        # Рамка за пределами текста
-        attempts = 0
-        frame_x_list = []
-        frame_y_list = []
-        while len(frame_x_list) < n_frame and attempts < n_frame * 10:
-            fx = rng.uniform(-1.2, 1.2)
-            fy = rng.uniform(-1.2, 1.2)
-            # Проверяем что не внутри текста
-            if n_used > 0:
-                dists = np.sqrt(
-                    (fx - positions[:n_used, 0]) ** 2 +
-                    (fy - positions[:n_used, 1]) ** 2
-                )
-                if dists.min() < 0.06:
-                    attempts += 1
-                    continue
-            frame_x_list.append(fx)
-            frame_y_list.append(fy)
-            attempts += 1
-
-        n_frame_valid = min(len(frame_x_list), n_frame)
-        if n_frame_valid > 0:
-            positions[n_used:n_used + n_frame_valid, 0] = frame_x_list[:n_frame_valid]
-            positions[n_used:n_used + n_frame_valid, 1] = frame_y_list[:n_frame_valid]
-            positions[n_used:n_used + n_frame_valid, 2] = 0.3
+        positions[n_used:, 0] = 0.0
+        positions[n_used:, 1] = 0.0
+        positions[n_used:, 2] = 5.0
 
     # Bounding box для overlay текста (в нормализованных координатах)
-    tw_norm = tw / w * 2.0
-    th_norm = th / h * 2.0
-    cx_norm = (ox + bbox[0] + tw // 2) / w * 2.0 - 1.0
-    cy_norm = 1.0 - (oy + bbox[1] + th // 2) / h * 2.0
+    tw_norm = w / long_side * 2.0 * fill
+    th_norm = h / long_side * 2.0 * fill
 
-    return positions, n_used, (cx_norm, cy_norm, tw_norm, th_norm)
+    return positions, n_used, (0.0, 0.0, tw_norm, th_norm)
+
+
+def _render_bitmap(text: str, font_path: str, font_size: int) -> NDArray[np.uint8]:
+    """Bitmap ровно по размеру текста (+ поля) — аспект не зависит от длины."""
+    font = ImageFont.truetype(font_path, max(4, int(font_size)))
+    probe = Image.new('L', (8, 8), 0)
+    tb = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
+    tw = max(1, tb[2] - tb[0])
+    th = max(1, tb[3] - tb[1])
+
+    pad = max(1, font_size // 8)
+    img = Image.new('L', (tw + pad * 2, th + pad * 2), 0)
+    ImageDraw.Draw(img).text((pad - tb[0], pad - tb[1]), text, font=font, fill=255)
+    return np.array(img, dtype=np.uint8)
+
+
+def _render_grid_bitmap(
+    text: str,
+    font_path: str,
+    grid_cols: int,
+    n_particles: int,
+    min_font: int = 10,
+) -> NDArray[np.uint8]:
+    """Bitmap, где 1 пиксель маски = 1 глиф на экране.
+
+    Ограничение жёсткое: надпись должна уместиться в квадрат
+    grid_cols × grid_cols пикселей маски (нормализация делит обе оси на
+    длинную сторону). Одна строка из 11 символов при grid_cols=38 даёт ~3 px
+    на букву — форма теряется, поэтому текст переносится по словам и
+    использует вертикаль.
+
+    min_font: ниже этого кегля буква в маске перестаёт быть узнаваемой.
+    """
+    box = max(8, min(grid_cols, 400))
+
+    for size in range(min(box, 64), min_font - 1, -1):
+        arr = _render_wrapped(text, font_path, size, box)
+        if arr is None:
+            continue
+        h, w = arr.shape
+        if w > box or h > box:
+            continue
+        if int((arr > 128).sum()) > n_particles:
+            continue
+        return arr
+
+    # Не влезло даже минимальным кеглем — берём его и отдаём субсэмплингу
+    arr = _render_wrapped(text, font_path, min_font, box, force=True)
+    return arr if arr is not None else _render_bitmap(text, font_path, min_font)
+
+
+def _wrap_lines(text: str, font: 'ImageFont.FreeTypeFont',
+                max_px: int) -> Optional[List[str]]:
+    """Разбить текст по словам так, чтобы каждая строка влезала в max_px."""
+    probe = ImageDraw.Draw(Image.new('L', (8, 8), 0))
+
+    def width(s: str) -> int:
+        tb = probe.textbbox((0, 0), s, font=font)
+        return tb[2] - tb[0]
+
+    lines: List[str] = []
+    current = ''
+    for word in text.split():
+        candidate = word if not current else f'{current} {word}'
+        if width(candidate) <= max_px:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        if width(word) > max_px:
+            return None  # одно слово не влезает — нужен меньший кегль
+        current = word
+    if current:
+        lines.append(current)
+    return lines or None
+
+
+def _render_wrapped(
+    text: str,
+    font_path: str,
+    font_size: int,
+    box: int,
+    force: bool = False,
+) -> Optional[NDArray[np.uint8]]:
+    """Многострочный bitmap с переносом по словам, вписанный в box × box."""
+    font = ImageFont.truetype(font_path, max(4, int(font_size)))
+    lines = _wrap_lines(text, font, box)
+    if lines is None:
+        if not force:
+            return None
+        lines = [text]
+
+    probe = ImageDraw.Draw(Image.new('L', (8, 8), 0))
+    line_gap = max(1, font_size // 6)
+    metrics = []
+    for line in lines:
+        tb = probe.textbbox((0, 0), line, font=font)
+        metrics.append((line, tb))
+
+    width = max(1, max(tb[2] - tb[0] for _, tb in metrics))
+    heights = [tb[3] - tb[1] for _, tb in metrics]
+    height = max(1, sum(heights) + line_gap * (len(metrics) - 1))
+
+    pad = 1
+    img = Image.new('L', (width + pad * 2, height + pad * 2), 0)
+    draw = ImageDraw.Draw(img)
+    y = pad
+    for (line, tb), lh in zip(metrics, heights):
+        lw = tb[2] - tb[0]
+        x = pad + (width - lw) // 2  # центрируем строку
+        draw.text((x - tb[0], y - tb[1]), line, font=font, fill=255)
+        y += lh + line_gap
+
+    return np.array(img, dtype=np.uint8)
+
+
+def glyph_grid_cols(
+    window_min_side: int,
+    cube_scale: float,
+    cell_size: int,
+    fill: float,
+) -> int:
+    """Сколько глифов размера cell_size влезает в ширину надписи.
+
+    projection.py: пик масштаба = min(w, h) * cube_scale, надпись занимает
+    2 * fill в нормализованных координатах.
+    """
+    peak_scale = float(window_min_side) * float(cube_scale)
+    px_span = 2.0 * float(fill) * peak_scale
+    cols = int(px_span / max(1.0, float(cell_size)))
+    return max(6, cols)
