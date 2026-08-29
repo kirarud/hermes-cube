@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -20,6 +21,49 @@ from typing import Dict, List, Optional
 from core.world import World
 from core.ai_constants import AI_BASE_URL, AI_API_KEY, AI_MODEL
 from core import companion_memory as mem
+
+
+# ── Личность ────────────────────────────────────────────────────────────
+# Character куба живёт в kira_prompt.md в корне репо, а не в коде:
+# править его должен иметь возможность тот, кто не лезет в Python.
+# При сборке exe файл нужно приложить: --add-data "kira_prompt.md;."
+_PROMPT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    'kira_prompt.md',
+)
+_PROMPT_CACHE: Optional[str] = None
+
+# Если файла нет (exe собран без --add-data) — модель остаётся рабочей,
+# но говорит безCharacter. Это страховка, а не основной путь.
+_FALLBACK_PROMPT = (
+    "Ты — живой аватар по имени Hermes Cube. "
+    "Твой дом — куб/сфера из частиц на рабочем столе Windows. "
+    "Отвечай кратко, эмоционально, на русском, не больше 2–3 предложений. "
+    "Ты чувствуешь пульсацию, вращение, цвета.\n\n"
+    "ВСЕГДА отвечай ТОЛЬКО валидным JSON-объектом в ОДНУ строку "
+    "без markdown, строго:\n"
+    '{"mood": "happy|sad|thinking|speaking|idle", '
+    '"text": "...", '
+    '"color_hue": 0.0-1.0}\n'
+    "mood — настроение, text — ответ, color_hue — оттенок 0..1."
+)
+
+
+def load_persona_prompt() -> str:
+    """Character куба из kira_prompt.md. Кэшируется после первого чтения."""
+    global _PROMPT_CACHE
+    if _PROMPT_CACHE is not None:
+        return _PROMPT_CACHE
+    try:
+        with open(_PROMPT_PATH, 'r', encoding='utf-8') as f:
+            text = f.read().strip()
+        if text:
+            _PROMPT_CACHE = text
+            return text
+    except OSError:
+        pass
+    _PROMPT_CACHE = _FALLBACK_PROMPT
+    return _FALLBACK_PROMPT
 
 
 def _auth_headers() -> Dict[str, str]:
@@ -149,18 +193,9 @@ def ai_chat(
         {
             "role": "system",
             "content": (
-                "Ты — живой аватар по имени Hermes Cube. "
-                "Твой дом — куб/сфера из частиц на рабочем столе Windows. "
-                "Отвечай кратко, эмоционально, на русском, не больше 2–3 предложений. "
-                "Ты чувствуешь пульсацию, вращение, цвета.\n\n"
+                f"{load_persona_prompt()}\n\n"
                 "Память о пользователе (учитывай в ответах):\n"
-                f"{memory_block}\n\n"
-                "ВСЕГДА отвечай ТОЛЬКО валидным JSON-объектом в ОДНУ строку "
-                "без markdown, строго:\n"
-                '{"mood": "happy|sad|thinking|speaking|idle", '
-                '"text": "...", '
-                '"color_hue": 0.0-1.0}\n'
-                "mood — настроение, text — ответ, color_hue — оттенок 0..1."
+                f"{memory_block}"
             ),
         },
     ]
