@@ -267,9 +267,12 @@ class InstallerApp:
             self.root.after(300, self.root.destroy)
 
         except Exception as e:
-            self.root.after(0, lambda: self._set_status(f'❌ Ошибка: {e}', 0))
+            # e удаляется после except, поэтому сохраняем текст сразу:
+            # иначе в lambda будет NameError вместо сообщения об ошибке
+            err = str(e)
+            self.root.after(0, lambda: self._set_status(f'❌ Ошибка: {err}', 0))
             self.root.after(0, lambda: messagebox.showerror(
-                'Ошибка установки', str(e)))
+                'Ошибка установки', err))
             self.root.after(0, lambda: self.install_btn.config(state='normal'))
             self.root.after(0, lambda: self.cancel_btn.config(state='normal'))
 

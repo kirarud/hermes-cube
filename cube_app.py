@@ -1378,16 +1378,16 @@ class CubeApp:
             return
 
         # ── AI mood override (from world.meta, not ai_module directly) ──
-        if world.meta.mood != 'idle':
-            mood_data = AI_MOODS.get(world.meta.mood, {})
+        if self.world.meta.mood != 'idle':
+            mood_data = AI_MOODS.get(self.world.meta.mood, {})
             if mood_data:
                 self.config['pulse_rate'] = mood_data.get('pulse_rate', self.config.get('pulse_rate', 1.8))
                 self.config['pulse_amplitude'] = mood_data.get('pulse_amp', self.config.get('pulse_amplitude', 0.12))
                 self.config['rotation_speed'] = mood_data.get('speed', self.config.get('rotation_speed', 0.28))
-        self._ai_color_shift = world.meta.color_shift
+        self._ai_color_shift = self.world.meta.color_shift
 
         # ── Mood change overlay ────────────────────────────────────────
-        current_mood: str = world.meta.mood
+        current_mood: str = self.world.meta.mood
         if current_mood != self._last_mood:
             self._last_mood = current_mood
             mood_labels: Dict[str, str] = {
