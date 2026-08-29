@@ -123,6 +123,7 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
         'text_hold_time': float,
         'text_morph_time': float,
         'text_char_mode': str,
+        'text_style': str,
         'text_max_chars': int,
         'text_fill': float,
         'text_freeze_spin': bool,
@@ -152,6 +153,11 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
             if key == 'text_char_mode' and value not in self.CHAR_MODES:
                 errors[key] = f"expected one of {list(self.CHAR_MODES)}"
                 continue
+            if key == 'text_style':
+                from core.text_layout import TEXT_STYLES
+                if value not in TEXT_STYLES:
+                    errors[key] = f"expected one of {list(TEXT_STYLES)}"
+                    continue
             if key == 'text_font_size' and not 6 <= value <= 200:
                 errors[key] = "expected 6..200"
                 continue
@@ -167,6 +173,14 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
 
             self.engine.config[key] = value
             applied[key] = value
+
+        # Стиль применяется и к надписи, которая уже на экране, а не только
+        # к следующей — иначе переключатель выглядит мёртвым.
+        if 'text_style' in applied and hasattr(self.engine, 'set_text_style'):
+            try:
+                self.engine.set_text_style(applied['text_style'])
+            except Exception as e:
+                errors['text_style'] = f"в конфиг записан, на кадр не попал: {e}"
 
         code = 200 if applied and not errors else (400 if errors and not applied else 200)
         self._send(code, {"ok": not errors, "applied": applied, "errors": errors})
