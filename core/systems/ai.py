@@ -66,6 +66,41 @@ def load_persona_prompt() -> str:
     return _FALLBACK_PROMPT
 
 
+# ── Мост: Кира → куб ────────────────────────────────────────────────────
+# Позволяет кубу говорить без локальной модели: реплика кладётся
+# в kira_link.json в корне репо, куб забирает её и удаляет файл,
+# чтобы не повторить одну и ту же фразу дважды.
+_KIRA_LINK_PATH = os.path.join(
+    os.path.dirname(_PROMPT_PATH), 'kira_link.json',
+)
+
+
+def _kira_link_reply() -> Optional[str]:
+    """Забрать реплику из kira_link.json, если она там лежит.
+
+    Никакой сети и никакой модели — файл пишет тот, кто ведёт куб.
+    Пусто/битый/отсутствует — молча возвращаем None, идём обычным путём.
+    """
+    try:
+        with open(_KIRA_LINK_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        text = str(data.get('text', '')).strip()
+        if not text:
+            return None
+        reply = {
+            "mood": str(data.get('mood', 'speaking')),
+            "text": text,
+            "color_hue": float(data.get('color_hue', 0.1)),
+        }
+    except (OSError, ValueError, TypeError):
+        return None
+    try:
+        os.remove(_KIRA_LINK_PATH)
+    except OSError:
+        pass
+    return json.dumps(reply, ensure_ascii=False)
+
+
 def _auth_headers() -> Dict[str, str]:
     headers = {
         "Content-Type": "application/json",
@@ -185,6 +220,11 @@ def ai_chat(
     timeout: int = 15,
 ) -> str:
     """Запрос к LM Studio. При недоступности — offline JSON."""
+    # Сначала мост: если есть готовая реплика — отдаём её, модель не будим.
+    link = _kira_link_reply()
+    if link:
+        return link
+
     if not _lm_reachable():
         return offline_reply(message)
 

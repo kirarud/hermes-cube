@@ -21,3 +21,6 @@ Thumbs.db
 venv/
 .superpowers/
 monitor.log
+
+# Мост Кира → куб: одноразовый файл реплики
+kira_link.json
