@@ -9,6 +9,7 @@ import tempfile
 import atexit
 import threading
 import time
+import queue
 import tkinter as tk
 from typing import Any, Dict, List, Optional
 
@@ -268,6 +269,8 @@ class HermesEngine:
         self.input_win.connect_world(self.world)
         print("[HermesEngine] ai systems ok", flush=True)
 
+        # HTTP commands are queued; only the Tk thread mutates World.
+        self._entity_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=64)
         self.running: bool = True
         self._last_mood: str = 'idle'
         self._trail_enabled: bool = False
@@ -448,6 +451,12 @@ class HermesEngine:
         if not self.running:
             return
         try:
+            for _ in range(64):
+                try:
+                    command = self._entity_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self.apply_entity_command(command)
             self._render_frame()
             self._tk_root.update_idletasks()
 
@@ -630,21 +639,21 @@ class HermesEngine:
         except Exception as e:
             print(f"[resize] auto_resize failed: {e}", flush=True)
 
+    def apply_entity_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
+        """One validated command path for buttons, joystick and localhost API."""
+        from core.entity_controller import apply_command
+        state = apply_command(self.world, command)
+        if command['action'] in ('shape', 'skin'):
+            save_config(self.config)
+        return state
+
     def apply_face_preset(self, theme: str) -> None:
-        """Switch skin without swapping the world, AI, memory, or renderer."""
+        """Backwards-compatible entrypoint for keyboard and tray skin changes."""
         from core.face_themes import THEMES
-        if theme not in THEMES:
-            return
-        self.config.update({
-            'shape_preset':'face', 'face_theme':theme, 'morph_progress':1.0,
-            'color_mode':'default', 'particle_mode':'breathe',
-            'wave_amp':.04, 'pulse_amplitude':.08, 'rotation_speed':.12,
-            'char_mode':'dots', 'symbol':'square' if theme=='Retro Hacker' else 'circle',
-            'cell_size':5,
-        })
-        save_config(self.config)
-        self._tk_root.lift()
-        print(f'[Hermes Face] theme = {theme}',flush=True)
+        if theme in THEMES:
+            self.apply_entity_command({'action': 'skin', 'value': theme})
+            self._tk_root.lift()
+            print(f'[Hermes Face] theme = {theme}', flush=True)
 
     def awaken_face(self) -> None:
         """A small, safe interaction; conversation still runs through the existing AI."""
@@ -663,7 +672,7 @@ class HermesEngine:
         win = tk.Toplevel(self._tk_root)
         self._face_menu=win
         win.title('Hermes Face · Сущность')
-        win.geometry('344x405')
+        win.geometry('344x600')
         win.configure(bg='#0b1422')
         win.attributes('-topmost',True)
         def lbl(text,size=11,color='#cfe4f3',bold=False):
@@ -680,11 +689,33 @@ class HermesEngine:
         frame=tk.Frame(win,bg='#0b1422');frame.pack(pady=(12,2))
         for name,shape in [('Персонаж','face'),('Облако','cloud'),('Куб','cube')]:
             def select(s=shape):
-                self.config['shape_preset']=s
-                self.config['morph_progress']=1.0 if s!='cube' else 0.0
-                save_config(self.config)
+                self.apply_entity_command({'action': 'shape', 'value': s})
             tk.Button(frame,text=name,command=select,bg='#203047',fg='#b9d5ea',
                 relief='flat',padx=9,pady=7).pack(side='left',padx=3)
+        lbl('ПОВОРОТ · ВИРТУАЛЬНЫЙ ДЖОЙСТИК',9,'#7d98b2',True).pack(pady=(12,3))
+        pad=tk.Canvas(win,width=140,height=140,bg='#0b1422',
+                      highlightthickness=0,cursor='hand2')
+        pad.pack()
+        pad.create_oval(10,10,130,130,outline='#45677d',width=2)
+        pad.create_line(70,14,70,126,fill='#223c50')
+        pad.create_line(14,70,126,70,fill='#223c50')
+        knob=pad.create_oval(52,52,88,88,outline='#79e0f3',
+                             fill='#20455e',width=2)
+        def point(event):
+            dx=(event.x-70)/58.0
+            dy=(70-event.y)/58.0
+            norm=max(1.0,(dx*dx+dy*dy)**0.5)
+            dx,dy=dx/norm,dy/norm
+            pad.coords(knob,52+dx*58,52-dy*58,88+dx*58,88-dy*58)
+            self.apply_entity_command({'action':'look','x':dx,'y':dy})
+        def release(event=None):
+            pad.coords(knob,52,52,88,88)
+            self.apply_entity_command({'action':'look','x':0.0,'y':0.0})
+        pad.bind('<ButtonPress-1>',point)
+        pad.bind('<B1-Motion>',point)
+        pad.bind('<ButtonRelease-1>',release)
+        win.bind('<Destroy>',lambda e: self.apply_entity_command(
+            {'action':'look','x':0.0,'y':0.0}) if e.widget is win else None)
         tk.Button(win,text='Разбудить · реакция',command=self.awaken_face,
             bg='#185065',fg='#dcffff',relief='flat',pady=9).pack(pady=(11,4))
         lbl('F — меню   ·   1–4 — темы   ·   двойной клик — отклик',9,'#7d98b2').pack(pady=(5,0))

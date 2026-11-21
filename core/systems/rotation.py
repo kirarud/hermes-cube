@@ -51,6 +51,15 @@ def update(world: World, dt: float) -> None:
         ang_y = t * speed
         ang_z = t * 0.08 * (speed / 0.28)
 
+    # Shared orientation from the local joystick or future command adapter.
+    # Default target = 0, so the original idle movement remains unchanged.
+    easing = 1.0 - math.exp(-max(0.0, min(float(dt), 0.1)) * 14.0)
+    meta = world.meta
+    meta.entity_yaw += (meta.entity_target_yaw - meta.entity_yaw) * easing
+    meta.entity_pitch += (meta.entity_target_pitch - meta.entity_pitch) * easing
+    ang_y += meta.entity_yaw
+    ang_x += meta.entity_pitch
+
     # One-shot copy + rotate in-place on out
     out[:] = inp
     _rotate_x_inplace(out, ang_x)

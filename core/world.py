@@ -101,6 +101,12 @@ class MetaState:
     # True = настроение задано извне (API), MoodSystem не перезаписывает
     mood_lock: bool = False
 
+    # One entity, many appearances: smoothed joystick / agent orientation (radians).
+    entity_target_yaw: float = 0.0
+    entity_target_pitch: float = 0.0
+    entity_yaw: float = 0.0
+    entity_pitch: float = 0.0
+
     # Input / Events
     events: deque = field(default_factory=deque)
     input_buffer: str = ''

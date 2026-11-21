@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Callable, Dict, Optional
@@ -24,7 +25,21 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
     engine: Any = None
 
     def do_POST(self) -> None:
-        content_len = int(self.headers.get('Content-Length', 0))
+        try:
+            content_len = int(self.headers.get('Content-Length', 0))
+        except ValueError:
+            return self._send(400, {'error': 'invalid Content-Length'})
+        if content_len < 0:
+            return self._send(400, {'error': 'invalid Content-Length'})
+        if self.path == '/api/entity':
+            # Never accept cross-origin browser commands or unbounded data.
+            if self.headers.get('Origin') or self.headers.get('Host', '').split(':')[0] not in ('127.0.0.1', 'localhost'):
+                return self._send(403, {'error': 'only local non-browser clients are allowed'})
+            media_type = self.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
+            if media_type != 'application/json':
+                return self._send(415, {'error': 'application/json required'})
+            if content_len > 4096:
+                return self._send(413, {'error': 'entity command too large'})
         body = self.rfile.read(content_len) if content_len else b'{}'
 
         # Битые байты — честная 400, а не молчаливый мусор из errors='replace'
@@ -44,7 +59,9 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
             self._send(400, {"error": "invalid JSON"})
             return
 
-        if self.path == '/api/config':
+        if self.path == '/api/entity':
+            self._handle_entity(data)
+        elif self.path == '/api/config':
             self._handle_config(data)
         elif self.path == '/api/mood':
             self._handle_mood(data)
@@ -62,6 +79,21 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
             self._handle_status()
         else:
             self._send(404, {"error": "not found"})
+
+    def _handle_entity(self, data: Any) -> None:
+        """Queue an allowlisted command for the Tk thread (never mutate Tk here)."""
+        from core.entity_controller import EntityCommandError, validate_command
+        try:
+            command = validate_command(data)
+        except EntityCommandError as exc:
+            return self._send(400, {'error': str(exc)})
+        if not self.engine or not hasattr(self.engine, '_entity_queue'):
+            return self._send(503, {'error': 'engine not ready'})
+        try:
+            self.engine._entity_queue.put_nowait(command)
+        except queue.Full:
+            return self._send(429, {'error': 'entity command queue full'})
+        self._send(202, {'ok': True, 'queued': True, 'command': command})
 
     # Ключи, при росте которых куб может не поместиться в окно
     RESIZE_KEYS = ('cube_scale', 'wave_amp', 'pulse_amplitude', 'cell_size')
@@ -206,7 +238,9 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
         if self.engine and hasattr(self.engine, 'world'):
             w = self.engine.world
             cfg = w.meta.config or {}
+            from core.entity_controller import entity_state
             return self._send(200, {
+                "entity": entity_state(w),
                 "particles": w.sim.active_count,
                 "shape": cfg.get('shape_preset', 'cube'),
                 "face_theme": cfg.get('face_theme', 'Holographic'),
