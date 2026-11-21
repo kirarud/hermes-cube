@@ -43,6 +43,9 @@ in vec3 v_color;
 in vec2 v_uv;
 flat in int v_symbol;
 out vec4 f_color;
+uniform int u_cloud_spheres;
+uniform float u_cloud_light;
+uniform float u_cloud_shadow;
 void main() {
     float d = length(v_uv);
     if (v_symbol == 0) {  // square
@@ -51,6 +54,27 @@ void main() {
     }
     if (v_symbol == 1) {  // circle
         if (d > 0.5) discard;
+        if (u_cloud_spheres == 1) {
+            // Every point is a small shaded sphere, not a flat uniformly
+            // colored disk. The fake Z normal gives a highlight and a
+            // genuine dark side *inside each particle*.
+            vec2 disk = v_uv * 2.0;
+            float sphereZ = sqrt(max(0.0, 1.0 - dot(disk, disk)));
+            vec3 normal = normalize(vec3(disk.x, disk.y, sphereZ));
+            vec3 lightDir = normalize(vec3(-0.62, 0.66, 0.72));
+            float diffuse = max(dot(normal, lightDir), 0.0);
+            float light = 0.36 + 0.76 * u_cloud_light * diffuse
+                          + 0.11 * sphereZ;
+            float shade = 1.0 - u_cloud_shadow * 0.62 * (1.0 - diffuse);
+            vec3 halfDir = normalize(lightDir + vec3(0.0, 0.0, 1.0));
+            float sparkle = pow(max(dot(normal, halfDir), 0.0), 22.0)
+                            * 0.33 * u_cloud_light;
+            vec3 shaded = clamp(v_color * light * shade
+                                + vec3(0.85, 0.93, 1.0) * sparkle,
+                                0.0, 1.0);
+            f_color = vec4(shaded, 1.0);
+            return;
+        }
         float edge = 1.0 - d * 0.3;
         f_color = vec4(v_color * edge, 1.0);
         return;
@@ -130,6 +154,9 @@ class GpuRenderer:
         self._fallback: bool = True
         self._n_capacity: int = 0
         self._symbol: str = 'circle'
+        self.cloud_spheres: bool = False
+        self.cloud_light: float = 0.85
+        self.cloud_shadow: float = 0.78
         self._char_map: Dict[str, NDArray[np.int32]] = {}
         self._current_set: str = 'default'
 

@@ -149,6 +149,7 @@ HINT_DURATION_MS: int = 5000
 DEFAULT_CONFIG: Dict[str, Any] = {
     'window_width': 600,
     'window_height': 600,
+    'render_max_side': 1024,  # 1K pixel cap; can be set lower
     'rotation_speed': 0.28,
     'pulse_rate': 1.8,
     'pulse_amplitude': 0.12,
@@ -156,7 +157,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     'cell_size': 6,
     'cube_scale': 0.27,
     'symbol': 'square',         # 'square' | 'circle' | 'dot'
-    'shape_preset': 'cube',     # 'cube' | 'sphere' | 'torus' | 'dna' | 'metaball' | 'spiral'
+    'shape_preset': 'cube',     # cube | sphere | torus | dna | metaball | spiral | cloud | face
+    'face_theme': 'Holographic',  # Holographic | Bioform | Retro Hacker | Glass
     'morph_progress': 0.0,      # 0 = cube, 1 = target shape
     'particle_mode': 'off',     # 'off' | 'wave' | 'breathe' | 'orbit' | 'geyser'
     'wave_speed': 1.5,          # speed multiplier for particle animation
@@ -169,6 +171,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     'symbol_set': 'default',      # from SYMBOL_SETS keys
     # Color mode
     'color_mode': 'default',      # 'default' | 'z_layers'
+    'cloud_light': 0.85,          # strength of directional light, cloud only
+    'cloud_shadow': 0.78,         # shadow depth, cloud only
     # Companion: как показывать ответ AI
     'response_mode': 'both',      # 'both' | 'letters' | 'avatar'
     # Companion: вывод текста частицами (avatar_text)
@@ -286,7 +290,10 @@ def _gen_metaball(points: PointArray) -> PointArray:
 
 
 #: Lookup table: name → generator function
+from core.cloud_skin import generate_cloud
+
 SHAPE_GENERATORS: Dict[str, Any] = {
+    'cloud': generate_cloud,
     'cube': _gen_cube,
     'sphere': _gen_sphere,
     'torus': _gen_torus,
@@ -757,7 +764,7 @@ class SettingsWindow:
 
         row = self._add_section(parent, 'Форма', row)
         row = self._add_dropdown(parent, 'shape_preset', 'Пресет формы',
-                                 ['cube', 'sphere', 'torus', 'dna', 'metaball', 'spiral'], row)
+                                 ['cube', 'sphere', 'torus', 'dna', 'metaball', 'spiral', 'cloud', 'face'], row)
         row = self._add_slider(parent, 'morph_progress', 'Морфинг (куб → форма)', 0.0, 1.0, row)
 
         row = self._add_section(parent, 'Анимация частиц', row)
@@ -774,6 +781,11 @@ class SettingsWindow:
         row = self._add_dropdown(parent, 'symbol', 'Форма частиц', ['square', 'circle', 'dot'], row)
         row = self._add_dropdown(parent, 'color_mode', 'Режим цвета',
                                  ['default', 'z_layers'], row)
+        row = self._add_dropdown(parent, 'face_theme', 'Hermes Face — стиль',
+                                 ['Holographic', 'Bioform', 'Retro Hacker', 'Glass'], row)
+        row = self._add_section(parent, 'Свет и тень облака', row)
+        row = self._add_slider(parent, 'cloud_light', 'Сила света', 0.0, 1.0, row)
+        row = self._add_slider(parent, 'cloud_shadow', 'Глубина тени', 0.0, 1.0, row)
         row = self._add_dropdown(parent, 'char_mode', 'Режим символов',
                                  ['dots', 'symbols', 'words', 'glow'], row)
         row = self._add_dropdown(parent, 'symbol_set', 'Набор символов',
@@ -812,6 +824,8 @@ class SettingsWindow:
                  font=('Segoe UI', 9)).grid(
             row=row, column=0, sticky='w', padx=(15, 5))
         var = tk.DoubleVar(value=self.config.get(key, 1.0))
+        if key == 'morph_progress':
+            self._morph_var = var
 
         def on_change(val: str, k: str = key, v: tk.DoubleVar = var) -> None:
             self.config[k] = float(val)
@@ -848,6 +862,12 @@ class SettingsWindow:
         def on_change(*_a: Any, k: str = key) -> None:
             self.config[k] = var.get()
             self.app.config[k] = var.get()
+            if k == 'shape_preset' and var.get() in ('cloud', 'face'):
+                # Shape presets should take effect immediately.
+                self.config['morph_progress'] = 1.0
+                self.app.config['morph_progress'] = 1.0
+                if hasattr(self, '_morph_var'):
+                    self._morph_var.set(1.0)
 
         var.trace_add('write', on_change)
         return row + 1

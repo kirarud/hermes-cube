@@ -209,6 +209,7 @@ class CubeAPIHandler(BaseHTTPRequestHandler):
             return self._send(200, {
                 "particles": w.sim.active_count,
                 "shape": cfg.get('shape_preset', 'cube'),
+                "face_theme": cfg.get('face_theme', 'Holographic'),
                 "mood": w.meta.mood,
                 # monitor хранит FPS в .fps (не last_fps — там был вечный 0)
                 "fps": round(float(getattr(self.engine.monitor, 'fps', 0.0)), 1),

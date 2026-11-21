@@ -49,7 +49,10 @@ class InputWindowSystem:
         self.window.configure(bg='#0d0d1a')
         self.window.attributes('-topmost', True)
         self.window.resizable(False, False)
-        self.window.overrideredirect(True)
+        try:
+            self.window.overrideredirect(True)
+        except Exception:
+            pass
 
         frame = tk.Frame(self.window, bg='#0d0d1a',
                          highlightbackground='#e94560',

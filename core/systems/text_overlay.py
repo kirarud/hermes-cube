@@ -51,8 +51,14 @@ class TextOverlaySystem:
         sh = self.root.winfo_screenheight()
         self.window.geometry(f'{sw}x{sh}+0+0')
         self.window.configure(bg=self.BG_COLOR)
-        self.window.attributes('-transparentcolor', self.BG_COLOR)
-        self.window.overrideredirect(True)
+        try:
+            self.window.attributes('-transparentcolor', self.BG_COLOR)
+        except Exception:
+            pass
+        try:
+            self.window.overrideredirect(True)
+        except Exception:
+            pass
         self.window.withdraw()
 
         self.canvas = tk.Canvas(

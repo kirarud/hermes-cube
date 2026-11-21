@@ -152,9 +152,14 @@ def layout_text_mask_styled(
     windir = os.environ.get('WINDIR', 'C:\\Windows')
 
     # Поиск шрифта
-    font_path = os.path.join(windir, 'Fonts', 'segoeui.ttf')
-    if not os.path.isfile(font_path):
-        font_path = os.path.join(windir, 'Fonts', 'arial.ttf')
+    candidates = [
+        os.path.join(windir, 'Fonts', 'segoeui.ttf'),
+        os.path.join(windir, 'Fonts', 'arial.ttf'),
+        '/System/Library/Fonts/Helvetica.ttc',
+        '/System/Library/Fonts/Supplemental/Arial.ttf',
+        '/Library/Fonts/Arial.ttf',
+    ]
+    font_path = next((p for p in candidates if os.path.isfile(p)), 'Arial.ttf')
 
     if grid_cols is not None and grid_cols > 0:
         arr = _render_grid_bitmap(text, font_path, int(grid_cols), n_particles)

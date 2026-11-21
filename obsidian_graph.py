@@ -279,9 +279,15 @@ class GraphCube:
         # ── Create window ────────────────────────────────────────────
         self.win = tk.Toplevel(root)
         self.win.title('♢ Graph Cube')
-        self.win.overrideredirect(True)
+        try:
+            self.win.overrideredirect(True)
+        except Exception:
+            pass
         self.win.configure(bg=self.TRANSPARENT_COLOR)
-        self.win.attributes('-transparentcolor', self.TRANSPARENT_COLOR)
+        try:
+            self.win.attributes('-transparentcolor', self.TRANSPARENT_COLOR)
+        except Exception:
+            pass
         self.win.attributes('-topmost', True)
 
         sw: int = self.win.winfo_screenwidth()

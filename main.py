@@ -56,6 +56,7 @@ from core.systems.text_overlay import TextOverlaySystem
 from core.systems.input_window import InputWindowSystem
 from core.monitor import FrameMonitor
 from core.gpu import GpuRenderer
+from core.render_resolution import limit_dimensions, resolve_max_render_side
 
 print("[main.py] imports ok", flush=True)
 
@@ -127,6 +128,7 @@ def _build_tray_menu(app_ref: Any) -> tuple:
         pystray.MenuItem('💬 Ввод (C)', lambda i, m: app_ref.input_win.toggle()),
         pystray.MenuItem('🌠 Трейлы', lambda i, m: app_ref._toggle_trails()),
         pystray.MenuItem('🔤 Текст', pystray.Menu(*_text_style_items(app_ref))),
+        pystray.MenuItem('🎭 Hermes Face', lambda i,m: app_ref._tk_root.after(0,app_ref.show_face_menu)),
         pystray.MenuItem('⚙ Настройки', lambda i, m: app_ref.show_settings()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem('✕ Выход', lambda i, m: app_ref.quit_app()),
@@ -134,7 +136,11 @@ def _build_tray_menu(app_ref: Any) -> tuple:
 
 
 def _setup_tray_icon(app_ref: Any) -> Optional[Any]:
-    import pystray
+    try:
+        import pystray
+    except (ImportError, ModuleNotFoundError):
+        print("[Tray] pystray is not installed, skipping tray icon.", flush=True)
+        return None
     try:
         image = _create_tray_image()
         # Menu(callable) — pystray дёргает вызываемое при каждом открытии,
@@ -157,23 +163,59 @@ class HermesEngine:
         self.config: Dict[str, Any] = load_config()
         print("[HermesEngine] config loaded", flush=True)
 
-        w = self.config.get('window_width', 700)
-        h = self.config.get('window_height', 550)
-        x = self.config.get('x', 100)
-        y = self.config.get('y', 100)
+        # Hard 1K cap; saved dimensions above it keep their aspect ratio.
+        self._render_max_side = resolve_max_render_side(
+            self.config.get('render_max_side', 1024))
+        w, h = limit_dimensions(
+            self.config.get('window_width') or 700,
+            self.config.get('window_height') or 550,
+            self._render_max_side,
+        )
+        x = self.config.get('x') if self.config.get('x') is not None else 100
+        y = self.config.get('y') if self.config.get('y') is not None else 100
 
         self._tk_root = tk.Tk()
         self._tk_root.title('♢ Hermes Cube')
         self._tk_root.geometry(f'{w}x{h}+{x}+{y}')
-        self._tk_root.overrideredirect(True)
-        self._tk_root.configure(bg=TRANSPARENT_COLOR)
-        self._tk_root.attributes('-transparentcolor', TRANSPARENT_COLOR)
+        try:
+            self._tk_root.overrideredirect(True)
+        except Exception:
+            pass
+
+        # macOS diagnostic fallback: draw an opaque window if the transparent
+        # NSWindow hides ImageTk's framebuffer despite a valid GPU frame.
+        import sys
+        self._mac_opaque = (sys.platform == 'darwin' and
+                            os.environ.get('HERMES_MAC_OPAQUE', '0') == '1')
+        if sys.platform == 'darwin':
+            if self._mac_opaque:
+                bg_color = '#0a0f1e'
+                try:
+                    self._tk_root.wm_attributes('-transparent', 0)
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._tk_root.wm_attributes('-transparent', 1)
+                except Exception:
+                    pass
+                bg_color = 'systemTransparent'
+        else:
+            bg_color = TRANSPARENT_COLOR
+            try:
+                self._tk_root.attributes('-transparentcolor', TRANSPARENT_COLOR)
+            except tk.TclError:
+                pass
+
+        self._tk_root.configure(bg=bg_color)
         self._tk_root.attributes('-topmost', True)
         self._tk_root.resizable(True, True)
+        self._tk_root.maxsize(self._render_max_side, self._render_max_side)
+        print(f"[HermesEngine] render cap: {self._render_max_side}px", flush=True)
         print("[HermesEngine] tk window created", flush=True)
 
         self._canvas = tk.Canvas(
-            self._tk_root, bg=TRANSPARENT_COLOR, highlightthickness=0)
+            self._tk_root, bg=bg_color, highlightthickness=0)
         self._canvas.pack(fill=tk.BOTH, expand=True)
         print("[HermesEngine] canvas created", flush=True)
 
@@ -254,6 +296,11 @@ class HermesEngine:
         self._tk_root.bind('C', lambda e: self.input_win.toggle())
         self._tk_root.bind('t', lambda e: self._toggle_draggable())
         self._tk_root.bind('T', lambda e: self._toggle_draggable())
+        self._tk_root.bind('f', lambda e: self.show_face_menu())
+        self._tk_root.bind('F', lambda e: self.show_face_menu())
+        for key, theme in enumerate(('Holographic', 'Bioform', 'Retro Hacker', 'Glass'),1):
+            self._tk_root.bind(str(key), lambda e, t=theme: self.apply_face_preset(t))
+        self._tk_root.bind('<Double-Button-1>', lambda e: self.awaken_face())
         self._tk_root.bind('r', lambda e: self._toggle_trails())
         self._tk_root.bind('R', lambda e: self._toggle_trails())
         # Drag
@@ -342,14 +389,24 @@ class HermesEngine:
                     t_depth = np.zeros(len(tx), dtype=np.float64)
                     self._renderer.render(tx, ty, t_depth, trgb, w, h, cell_size=1)
 
-        # Readback → PPM → Tk (общий для обоих режимов)
+        # Readback → PhotoImage → Tk
         fbo_data = self._fbo.read(components=4)
         arr = np.frombuffer(fbo_data, dtype=np.uint8).reshape((h, w, 4))
-        self._rgb_arr[:, :, 0] = arr[:, :, 0]
-        self._rgb_arr[:, :, 1] = arr[:, :, 1]
-        self._rgb_arr[:, :, 2] = arr[:, :, 2]
-        ppm_data = self._ppm_header + self._rgb_arr.tobytes()
-        self._tk_photo = tk.PhotoImage(data=ppm_data, format='ppm')
+
+        import sys
+        if sys.platform == 'darwin' and not self._mac_opaque:
+            from PIL import Image, ImageTk
+            # На macOS делаем фон (где черный / пустой пиксель) полностью прозрачным в альфа-канале
+            # В шейдере фон очищается (0, 0, 1, 0), частицы имеют альфу 255
+            img = Image.fromarray(arr, mode='RGBA')
+            self._tk_photo = ImageTk.PhotoImage(img)
+        else:
+            self._rgb_arr[:, :, 0] = arr[:, :, 0]
+            self._rgb_arr[:, :, 1] = arr[:, :, 1]
+            self._rgb_arr[:, :, 2] = arr[:, :, 2]
+            ppm_data = self._ppm_header + self._rgb_arr.tobytes()
+            self._tk_photo = tk.PhotoImage(data=ppm_data, format='ppm')
+
         if self._canvas_image is None:
             self._canvas_image = self._canvas.create_image(
                 0, 0, anchor='nw', image=self._tk_photo)
@@ -530,7 +587,7 @@ class HermesEngine:
         проецируется за границы, физически отсутствует в кадре. При росте
         cube_scale / wave_amp / pulse_amplitude нужно окно побольше.
         """
-        MAX_PX: int = 1600
+        MAX_PX: int = self._render_max_side
         try:
             scale_val = float(self.config.get('cube_scale', 0.27))
             pulse_amp = float(self.config.get('pulse_amplitude', 0.12))
@@ -572,6 +629,65 @@ class HermesEngine:
                 print(f"[resize] window → {needed_int}×{needed_int}", flush=True)
         except Exception as e:
             print(f"[resize] auto_resize failed: {e}", flush=True)
+
+    def apply_face_preset(self, theme: str) -> None:
+        """Switch skin without swapping the world, AI, memory, or renderer."""
+        from core.face_themes import THEMES
+        if theme not in THEMES:
+            return
+        self.config.update({
+            'shape_preset':'face', 'face_theme':theme, 'morph_progress':1.0,
+            'color_mode':'default', 'particle_mode':'breathe',
+            'wave_amp':.04, 'pulse_amplitude':.08, 'rotation_speed':.12,
+            'char_mode':'dots', 'symbol':'square' if theme=='Retro Hacker' else 'circle',
+            'cell_size':5,
+        })
+        save_config(self.config)
+        self._tk_root.lift()
+        print(f'[Hermes Face] theme = {theme}',flush=True)
+
+    def awaken_face(self) -> None:
+        """A small, safe interaction; conversation still runs through the existing AI."""
+        self.world.meta.mood = 'happy'
+        self.world.meta.mood_lock = True
+        self.world.meta.speak_buffer = 'Я здесь.'
+
+    def show_face_menu(self) -> None:
+        """Optional lightweight local UI; never replaces the free-form window."""
+        import tkinter as tk
+        from core.face_themes import THEMES
+        win = getattr(self,'_face_menu',None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+            return
+        win = tk.Toplevel(self._tk_root)
+        self._face_menu=win
+        win.title('Hermes Face · Сущность')
+        win.geometry('344x405')
+        win.configure(bg='#0b1422')
+        win.attributes('-topmost',True)
+        def lbl(text,size=11,color='#cfe4f3',bold=False):
+            return tk.Label(win,text=text,bg='#0b1422',fg=color,
+                font=('Helvetica',size,'bold' if bold else 'normal'))
+        lbl('HERMES  /  FACE',15,'#a9f0f9',True).pack(pady=(20,4))
+        lbl('Одна сущность · несколько воплощений',10,'#7d98b2').pack(pady=(0,12))
+        for theme,(_,glow,_) in THEMES.items():
+            hex_color='#%02x%02x%02x'%glow
+            tk.Button(win,text=theme,command=lambda t=theme:self.apply_face_preset(t),
+                bg='#15263b',fg=hex_color,activebackground='#253b52',
+                activeforeground='#ffffff',font=('Helvetica',11,'bold'),
+                relief='flat',pady=9,width=26).pack(pady=4)
+        frame=tk.Frame(win,bg='#0b1422');frame.pack(pady=(12,2))
+        for name,shape in [('Персонаж','face'),('Облако','cloud'),('Куб','cube')]:
+            def select(s=shape):
+                self.config['shape_preset']=s
+                self.config['morph_progress']=1.0 if s!='cube' else 0.0
+                save_config(self.config)
+            tk.Button(frame,text=name,command=select,bg='#203047',fg='#b9d5ea',
+                relief='flat',padx=9,pady=7).pack(side='left',padx=3)
+        tk.Button(win,text='Разбудить · реакция',command=self.awaken_face,
+            bg='#185065',fg='#dcffff',relief='flat',pady=9).pack(pady=(11,4))
+        lbl('F — меню   ·   1–4 — темы   ·   двойной клик — отклик',9,'#7d98b2').pack(pady=(5,0))
 
     def show_settings(self) -> None:
         """Показать SettingsWindow (синглтон)."""

@@ -22,6 +22,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from core.world import World
+from core.face_themes import face_colors
 
 # Палитра Spatial Depth по Z-слоям
 Z_LAYER_COLORS = np.array([
@@ -48,6 +49,10 @@ def update(world: World, dt: float) -> None:
         _apply_z_layers(world, n)
     else:
         _apply_default_depth(world, n)
+        if world.meta.config.get('shape_preset') == 'cloud':
+            _apply_cloud_tint(world, n)
+        elif world.meta.config.get('shape_preset') == 'face':
+            _apply_face_theme(world, n)
 
     # HSV shift от AI mood (поверх всего)
     shift = world.meta.color_shift
@@ -101,6 +106,66 @@ def _apply_default_depth(world: World, n: int) -> None:
     world.render.final_rgb = np.clip(
         rgb * depth_factor[:, None], 0, 255,
     ).astype(np.uint8)
+
+
+def _apply_cloud_tint(world: World, n: int) -> None:
+    """Soft pale blue/white cloud skin, blended by the existing morph slider."""
+    morph = float(np.clip(world.meta.config.get('morph_progress', 0.0), 0.0, 1.0))
+    if morph <= 0.0:
+        return
+    pts = world.sim.world_position[:n]
+    # Camera-space lighting: directional key, back shadow, and soft rim.
+    # This is inexpensive shading, not physically accurate cast shadows.
+    centered = pts - pts.mean(axis=0, keepdims=True)
+    normals = centered / np.clip(
+        np.linalg.norm(centered, axis=1, keepdims=True), 1e-8, None
+    )
+    key = np.array([-0.46, -0.57, 0.68], dtype=np.float64)
+    key /= np.linalg.norm(key)
+    lambert = np.clip(normals @ key, 0.0, 1.0)
+    front = np.clip(0.5 + 0.4 * normals[:, 2], 0.0, 1.0)
+    rim = (1.0 - np.abs(normals[:, 2])) ** 2
+
+    strength = float(np.clip(world.meta.config.get('cloud_light', 0.85), 0.0, 1.0))
+    shadow_strength = float(np.clip(
+        world.meta.config.get('cloud_shadow', 0.78), 0.0, 1.0
+    ))
+    illumination = np.clip(
+        (0.23 + 0.22 * front + strength * (0.69 * lambert + 0.18 * rim))
+        * (1.0 - 0.40 * shadow_strength * (1.0 - lambert)),
+        0.0, 1.0,
+    )
+    cool_shadow = np.array([43.0, 89.0, 151.0])
+    warm_light = np.array([241.0, 249.0, 255.0])
+    cloud_rgb = (cool_shadow[None, :]
+                 + illumination[:, None] * (warm_light - cool_shadow)[None, :])
+
+    # The original cube colours and avatar text remain unchanged.
+    freeze = float(np.clip(getattr(world.meta, 'text_freeze', 0.0), 0.0, 1.0))
+    blend = morph * (1.0 - freeze)
+    original_rgb = world.render.final_rgb[:n].astype(np.float64)
+    world.render.final_rgb[:n] = np.clip(
+        original_rgb * (1.0 - blend) + cloud_rgb * blend, 0, 255
+    ).astype(np.uint8)
+
+
+
+def _apply_face_theme(world: World, n: int) -> None:
+    """Blend Hermes Face material with the existing cube and speech colors."""
+    morph = float(np.clip(world.meta.config.get('morph_progress',0),0,1))
+    freeze = float(np.clip(getattr(world.meta, 'text_freeze',0),0,1))
+    blend = morph * (1.0-freeze)
+    if blend <= 0.0:
+        return
+    geometry = world.sim.shape_cache.get('face')
+    if geometry is None or len(geometry) < n:
+        return
+    themed = face_colors(geometry[:n], world.meta.config.get('face_theme','Holographic'), world.meta.mood)
+    if blend >= .999:
+        world.render.final_rgb[:n] = themed
+    else:
+        original = world.render.final_rgb[:n].astype(np.float64)
+        world.render.final_rgb[:n] = np.clip(original*(1.0-blend)+themed*blend, 0,255).astype(np.uint8)
 
 
 def _apply_z_layers(world: World, n: int) -> None:

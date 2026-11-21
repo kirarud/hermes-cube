@@ -12,6 +12,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from core.world import World
+from core.cloud_skin import generate_cloud
+from core.face_avatar import generate_face
 
 
 def update(world: World, dt: float) -> None:
@@ -52,6 +54,8 @@ def _rebuild(world: World, density: int) -> None:
         'dna': _gen_dna(pts),
         'metaball': _gen_metaball(pts),
         'spiral': _gen_spiral(pts),
+        'cloud': generate_cloud(pts),
+        'face': generate_face(pts),
     }
 
 

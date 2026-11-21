@@ -41,9 +41,15 @@ def update(world: World, dt: float) -> None:
         out[:] = inp
         return
 
-    ang_x: float = t * 0.20 * (speed / 0.28)
-    ang_y: float = t * speed
-    ang_z: float = t * 0.08 * (speed / 0.28)
+    # A face should look at the user, not spin away every few seconds.
+    if cfg.get('shape_preset') == 'face' and float(cfg.get('morph_progress',0)) >= .99:
+        ang_x = 0.035 * math.sin(t * 0.45)
+        ang_y = 0.15 * math.sin(t * 0.28)
+        ang_z = 0.025 * math.sin(t * 0.37)
+    else:
+        ang_x = t * 0.20 * (speed / 0.28)
+        ang_y = t * speed
+        ang_z = t * 0.08 * (speed / 0.28)
 
     # One-shot copy + rotate in-place on out
     out[:] = inp

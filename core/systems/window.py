@@ -48,7 +48,10 @@ class WindowSystem:
         self.root.resizable(True, True)
         self.root.overrideredirect(True)
         self.root.configure(bg=TRANSPARENT_COLOR)
-        self.root.attributes('-transparentcolor', TRANSPARENT_COLOR)
+        try:
+            self.root.attributes('-transparentcolor', TRANSPARENT_COLOR)
+        except Exception:
+            pass
         self.root.attributes('-topmost', True)  # всегда поверх всех окон
 
         # Canvas
