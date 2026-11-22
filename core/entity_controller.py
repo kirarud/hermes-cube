@@ -11,7 +11,7 @@ from typing import Any
 from core.face_themes import THEMES
 from core.world import World
 
-SHAPES = ('face', 'cloud', 'cube')
+SHAPES = ('face', 'face_original', 'cloud', 'cube')
 MOODS = ('idle', 'happy', 'sad', 'thinking', 'speaking')
 MAX_YAW = 0.85
 MAX_PITCH = 0.45
@@ -69,7 +69,9 @@ def apply_command(world: World, payload: Any) -> dict[str, Any]:
         cfg.update({
             'shape_preset': 'face', 'face_theme': theme, 'morph_progress': 1.0,
             'color_mode': 'default', 'particle_mode': 'breathe',
-            'wave_amp': .04, 'pulse_amplitude': .08, 'rotation_speed': .12,
+            'wave_amp': .018 if theme == 'Soft Glow' else .04,
+            'pulse_amplitude': .035 if theme == 'Soft Glow' else .08,
+            'rotation_speed': .08 if theme == 'Soft Glow' else .12,
             'char_mode': 'dots',
             'symbol': 'square' if theme == 'Retro Hacker' else 'circle',
             'cell_size': 5,

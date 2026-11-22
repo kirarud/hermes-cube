@@ -7,6 +7,7 @@ from numpy.typing import NDArray
 from core.face_avatar import regions
 
 THEMES = {
+    'Soft Glow': ((96, 92, 136), (220, 183, 178), (255, 244, 228)),
     'Holographic': ((30, 106, 166), (103, 230, 251), (220, 255, 255)),
     'Bioform': ((76, 29, 14), (246, 151, 28), (255, 235, 141)),
     'Retro Hacker': ((24, 80, 42), (78, 232, 113), (207, 255, 195)),

@@ -42,7 +42,7 @@ def update(world: World, dt: float) -> None:
         return
 
     # A face should look at the user, not spin away every few seconds.
-    if cfg.get('shape_preset') == 'face' and float(cfg.get('morph_progress',0)) >= .99:
+    if cfg.get('shape_preset') in ('face', 'face_original') and float(cfg.get('morph_progress',0)) >= .99:
         ang_x = 0.035 * math.sin(t * 0.45)
         ang_y = 0.15 * math.sin(t * 0.28)
         ang_z = 0.025 * math.sin(t * 0.37)

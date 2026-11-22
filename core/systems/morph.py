@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from core.face_avatar import regions
 from core.world import World
 
 
@@ -35,3 +36,12 @@ def update(world: World, dt: float) -> None:
     tgt = target[:n]
     # lerp: base * (1-t) + target * t
     world.sim.morphed[:n] = base * (1.0 - morph) + tgt * morph
+
+    # The friendly companion has a neutral mouth by default. Only an explicit
+    # happy mood creates a modest smile, without changing the cached shape.
+    if (shape_name == 'face' and morph >= 0.99 and
+            world.meta.mood == 'happy' and not world.meta.text_mode):
+        _, _, c, d, _ = regions(n)
+        if d > c:
+            u = np.linspace(-1.0, 1.0, d-c)
+            world.sim.morphed[c:d, 1] -= .055 * (1.0-u*u)

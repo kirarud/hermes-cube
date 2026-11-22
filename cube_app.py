@@ -157,8 +157,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     'cell_size': 6,
     'cube_scale': 0.27,
     'symbol': 'square',         # 'square' | 'circle' | 'dot'
-    'shape_preset': 'cube',     # cube | sphere | torus | dna | metaball | spiral | cloud | face
-    'face_theme': 'Holographic',  # Holographic | Bioform | Retro Hacker | Glass
+    'shape_preset': 'cube',     # cube | sphere | torus | dna | metaball | spiral | cloud | face | face_original
+    'face_theme': 'Soft Glow',  # Soft Glow | Holographic | Bioform | Retro Hacker | Glass
     'morph_progress': 0.0,      # 0 = cube, 1 = target shape
     'particle_mode': 'off',     # 'off' | 'wave' | 'breathe' | 'orbit' | 'geyser'
     'wave_speed': 1.5,          # speed multiplier for particle animation
@@ -291,8 +291,12 @@ def _gen_metaball(points: PointArray) -> PointArray:
 
 #: Lookup table: name → generator function
 from core.cloud_skin import generate_cloud
+from core.face_avatar import generate_face
+from core.friendly_face import generate_friendly_face
 
 SHAPE_GENERATORS: Dict[str, Any] = {
+    'face': generate_friendly_face,
+    'face_original': generate_face,
     'cloud': generate_cloud,
     'cube': _gen_cube,
     'sphere': _gen_sphere,
@@ -764,7 +768,7 @@ class SettingsWindow:
 
         row = self._add_section(parent, 'Форма', row)
         row = self._add_dropdown(parent, 'shape_preset', 'Пресет формы',
-                                 ['cube', 'sphere', 'torus', 'dna', 'metaball', 'spiral', 'cloud', 'face'], row)
+                                 ['cube', 'sphere', 'torus', 'dna', 'metaball', 'spiral', 'cloud', 'face', 'face_original'], row)
         row = self._add_slider(parent, 'morph_progress', 'Морфинг (куб → форма)', 0.0, 1.0, row)
 
         row = self._add_section(parent, 'Анимация частиц', row)
@@ -782,7 +786,7 @@ class SettingsWindow:
         row = self._add_dropdown(parent, 'color_mode', 'Режим цвета',
                                  ['default', 'z_layers'], row)
         row = self._add_dropdown(parent, 'face_theme', 'Hermes Face — стиль',
-                                 ['Holographic', 'Bioform', 'Retro Hacker', 'Glass'], row)
+                                 ['Soft Glow', 'Holographic', 'Bioform', 'Retro Hacker', 'Glass'], row)
         row = self._add_section(parent, 'Свет и тень облака', row)
         row = self._add_slider(parent, 'cloud_light', 'Сила света', 0.0, 1.0, row)
         row = self._add_slider(parent, 'cloud_shadow', 'Глубина тени', 0.0, 1.0, row)
@@ -862,7 +866,7 @@ class SettingsWindow:
         def on_change(*_a: Any, k: str = key) -> None:
             self.config[k] = var.get()
             self.app.config[k] = var.get()
-            if k == 'shape_preset' and var.get() in ('cloud', 'face'):
+            if k == 'shape_preset' and var.get() in ('cloud', 'face', 'face_original'):
                 # Shape presets should take effect immediately.
                 self.config['morph_progress'] = 1.0
                 self.app.config['morph_progress'] = 1.0

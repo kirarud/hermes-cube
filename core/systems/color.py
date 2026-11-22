@@ -23,6 +23,7 @@ from numpy.typing import NDArray
 
 from core.world import World
 from core.face_themes import face_colors
+from core.friendly_face import friendly_face_colors
 
 # Палитра Spatial Depth по Z-слоям
 Z_LAYER_COLORS = np.array([
@@ -51,7 +52,7 @@ def update(world: World, dt: float) -> None:
         _apply_default_depth(world, n)
         if world.meta.config.get('shape_preset') == 'cloud':
             _apply_cloud_tint(world, n)
-        elif world.meta.config.get('shape_preset') == 'face':
+        elif world.meta.config.get('shape_preset') in ('face', 'face_original'):
             _apply_face_theme(world, n)
 
     # HSV shift от AI mood (поверх всего)
@@ -157,10 +158,12 @@ def _apply_face_theme(world: World, n: int) -> None:
     blend = morph * (1.0-freeze)
     if blend <= 0.0:
         return
-    geometry = world.sim.shape_cache.get('face')
+    shape = world.meta.config.get('shape_preset', 'face')
+    geometry = world.sim.shape_cache.get(shape)
     if geometry is None or len(geometry) < n:
         return
-    themed = face_colors(geometry[:n], world.meta.config.get('face_theme','Holographic'), world.meta.mood)
+    palette = friendly_face_colors if shape == 'face' else face_colors
+    themed = palette(geometry[:n], world.meta.config.get('face_theme','Holographic'), world.meta.mood)
     if blend >= .999:
         world.render.final_rgb[:n] = themed
     else:

@@ -301,7 +301,7 @@ class HermesEngine:
         self._tk_root.bind('T', lambda e: self._toggle_draggable())
         self._tk_root.bind('f', lambda e: self.show_face_menu())
         self._tk_root.bind('F', lambda e: self.show_face_menu())
-        for key, theme in enumerate(('Holographic', 'Bioform', 'Retro Hacker', 'Glass'),1):
+        for key, theme in enumerate(('Soft Glow', 'Holographic', 'Bioform', 'Retro Hacker', 'Glass'),1):
             self._tk_root.bind(str(key), lambda e, t=theme: self.apply_face_preset(t))
         self._tk_root.bind('<Double-Button-1>', lambda e: self.awaken_face())
         self._tk_root.bind('r', lambda e: self._toggle_trails())
@@ -347,7 +347,13 @@ class HermesEngine:
         _t2 = time.perf_counter_ns()
         # GPU render → FBO
         self._fbo.use()
-        self._gl_ctx.clear(0.0, 0.0, 1.0 / 255.0, 0.0)
+        # In opaque macOS mode, a softer background is less visually oppressive.
+        # Keep the original transparent/keyed framebuffer everywhere else.
+        if (self._mac_opaque and self.config.get('shape_preset') == 'face' and
+                self.config.get('face_theme') == 'Soft Glow'):
+            self._gl_ctx.clear(0.10, 0.13, 0.18, 0.0)
+        else:
+            self._gl_ctx.clear(0.0, 0.0, 1.0 / 255.0, 0.0)
         cell = max(MIN_CELL_SIZE, int(self.config.get('cell_size', MIN_CELL_SIZE)))
 
         char_mode: str = self.config.get('char_mode', 'dots')
@@ -672,7 +678,7 @@ class HermesEngine:
         win = tk.Toplevel(self._tk_root)
         self._face_menu=win
         win.title('Hermes Face · Сущность')
-        win.geometry('344x600')
+        win.geometry('344x680')
         win.configure(bg='#0b1422')
         win.attributes('-topmost',True)
         def lbl(text,size=11,color='#cfe4f3',bold=False):
@@ -687,11 +693,14 @@ class HermesEngine:
                 activeforeground='#ffffff',font=('Helvetica',11,'bold'),
                 relief='flat',pady=9,width=26).pack(pady=4)
         frame=tk.Frame(win,bg='#0b1422');frame.pack(pady=(12,2))
-        for name,shape in [('Персонаж','face'),('Облако','cloud'),('Куб','cube')]:
+        for name,shape in [('Добрый','face'),('Облако','cloud'),('Куб','cube')]:
             def select(s=shape):
                 self.apply_entity_command({'action': 'shape', 'value': s})
             tk.Button(frame,text=name,command=select,bg='#203047',fg='#b9d5ea',
                 relief='flat',padx=9,pady=7).pack(side='left',padx=3)
+        tk.Button(win,text='Старый экспериментальный облик (архив)',
+            command=lambda:self.apply_entity_command({'action':'shape','value':'face_original'}),
+            bg='#152033',fg='#96a7bd',relief='flat',pady=6).pack(pady=(4,0))
         lbl('ПОВОРОТ · ВИРТУАЛЬНЫЙ ДЖОЙСТИК',9,'#7d98b2',True).pack(pady=(12,3))
         pad=tk.Canvas(win,width=140,height=140,bg='#0b1422',
                       highlightthickness=0,cursor='hand2')
@@ -718,7 +727,7 @@ class HermesEngine:
             {'action':'look','x':0.0,'y':0.0}) if e.widget is win else None)
         tk.Button(win,text='Разбудить · реакция',command=self.awaken_face,
             bg='#185065',fg='#dcffff',relief='flat',pady=9).pack(pady=(11,4))
-        lbl('F — меню   ·   1–4 — темы   ·   двойной клик — отклик',9,'#7d98b2').pack(pady=(5,0))
+        lbl('F — меню   ·   1–5 — темы   ·   двойной клик — отклик',9,'#7d98b2').pack(pady=(5,0))
 
     def show_settings(self) -> None:
         """Показать SettingsWindow (синглтон)."""
